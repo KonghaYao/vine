@@ -32,6 +32,7 @@ use crate::{
     protocol::ImageProtocol,
     search::SearchOptions,
     view::{RefreshViewContext, View},
+    watch::AutoRefreshBlockers,
     widget::commit_list::{CommitInfo, CommitListState},
 };
 
@@ -98,6 +99,11 @@ pub struct App<'a> {
     remote_action_in_progress: bool,
     /// The actions that are queued to run after the current one succeeded.
     pending_actions: VecDeque<GitAction>,
+    /// Whether a change of the repository is waiting to be refreshed.
+    ///
+    /// The refresh is postponed while the user is in the middle of something, to avoid
+    /// interrupting the input and the dialogs, and to keep what is shown on the screen.
+    pending_refresh: bool,
     ctx: Rc<AppContext>,
     ec: &'a EventController,
 }
@@ -158,6 +164,7 @@ impl<'a> App<'a> {
             app_status: AppStatus::default(),
             remote_action_in_progress: false,
             pending_actions: VecDeque::new(),
+            pending_refresh: false,
             ctx,
             ec,
         };
@@ -181,6 +188,12 @@ impl App<'_> {
         terminal.clear()?;
 
         loop {
+            if self.pending_refresh && !self.is_auto_refresh_blocked() {
+                // The application is idle again, so the postponed refresh is performed now.
+                self.pending_refresh = false;
+                self.view.refresh();
+            }
+
             self.prepare_render(terminal)?;
             self.flush_pending_graph_uploads()?;
             terminal.draw(|f| self.render(f))?;
@@ -334,6 +347,15 @@ impl App<'_> {
                     let request = RefreshRequest { context };
                     return Ok(Ret::Refresh(request));
                 }
+                AppEvent::RepoChanged => {
+                    if self.is_auto_refresh_blocked() {
+                        self.pending_refresh = true;
+                    } else {
+                        // The same refresh as the one of the refresh key, restoring the state of
+                        // the current view.
+                        self.view.refresh();
+                    }
+                }
                 AppEvent::ClearStatusLine => {
                     self.clear_status_line();
                 }
@@ -368,6 +390,23 @@ impl App<'_> {
                 }
             }
         }
+    }
+
+    /// Whether a change of the repository must be postponed before it is refreshed.
+    ///
+    /// Refreshing rebuilds the whole application, so it is postponed while the user is entering
+    /// input or a dialog is open, and while a refresh would repeat or break what is running.
+    fn is_auto_refresh_blocked(&self) -> bool {
+        AutoRefreshBlockers {
+            input_in_progress: matches!(self.app_status.status_line, StatusLine::Input { .. })
+                || self.view.is_searching(),
+            overlay_open: matches!(self.view, View::ActionMenu(_) | View::Help(_)),
+            // Refreshing the user command view runs its command again.
+            user_command_open: matches!(self.view, View::UserCommand(_)),
+            // The queued actions of the running action would be lost.
+            remote_action_in_progress: self.remote_action_in_progress,
+        }
+        .blocks()
     }
 
     fn prepare_render(&mut self, terminal: &mut DefaultTerminal) -> Result<(), std::io::Error> {

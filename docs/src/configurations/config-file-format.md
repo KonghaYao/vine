@@ -28,6 +28,7 @@ clipboard = "auto"
 [ui.common]
 cursor_type = "native"
 mouse = true
+auto_refresh = true
 
 [ui.list]
 scrolloff = 0
@@ -296,6 +297,17 @@ Whether to enable mouse support.
 
 When enabled, the terminal mouse is captured by the application, so selecting and copying text with the terminal itself requires holding `Shift` (in most terminals).
 Set this to `false` to use the terminal native mouse behavior instead; mouse operations are disabled while the application runs.
+
+### `ui.common.auto_refresh`
+
+Whether to refresh the commit graph automatically when the repository is changed by another process, such as a `git commit`, `git fetch`, or a branch switch in another terminal.
+
+- type: `boolean`
+- default: `true`
+
+The repository is watched for changes while the application runs, and the commit graph, the refs and the selected commit (restored by hash where possible) are reloaded when it changes, in the same way as pressing the refresh key.
+
+The refresh is postponed while the search query is being entered, while the action menu, a dialog or the help screen is open, while the output of a user command is shown, and while a git action is running, so that the operation is not interrupted; a postponed refresh is performed as soon as the application is idle again. Set this to `false` to disable watching the repository; the graph can still be refreshed manually with the refresh key.
 
 ### `ui.list.scrolloff`
 

@@ -1,5 +1,6 @@
 use std::{
     fmt::{self, Debug, Formatter},
+    path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc, Arc, Mutex,
@@ -13,7 +14,12 @@ use serde::{
     Deserialize,
 };
 
-use crate::{git::Ref, git_action::GitAction, view::RefreshViewContext};
+use crate::{
+    git::Ref,
+    git_action::GitAction,
+    view::RefreshViewContext,
+    watch::{RepoWatcher, WatchPaths},
+};
 
 #[derive(Debug)]
 pub enum AppEvent {
@@ -47,6 +53,8 @@ pub enum AppEvent {
         value: String,
     },
     Refresh(RefreshViewContext),
+    /// The repository was changed by another process, and should be refreshed.
+    RepoChanged,
     ClearStatusLine,
     UpdateStatusInput {
         message: String,
@@ -61,7 +69,6 @@ pub enum AppEvent {
     },
     NotifyInfo(String),
     NotifySuccess(String),
-    #[expect(dead_code)]
     NotifyWarn(String),
     NotifyError(String),
 }
@@ -113,6 +120,7 @@ pub struct EventController {
     stop: Arc<AtomicBool>,
     handle: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
     mouse_capture: bool,
+    watcher: Mutex<Option<RepoWatcher>>,
 }
 
 impl EventController {
@@ -127,10 +135,29 @@ impl EventController {
             stop: Arc::new(AtomicBool::new(false)),
             handle: Arc::new(Mutex::new(None)),
             mouse_capture,
+            watcher: Mutex::new(None),
         };
         controller.start();
 
         controller
+    }
+
+    /// Watches the repository at the given path, refreshing the application when it is changed
+    /// by another process.
+    ///
+    /// Nothing is watched when the watch cannot be started, in which case the application is
+    /// notified and can still be refreshed manually. The watcher is stopped with this controller.
+    pub fn watch_repository(&self, repo_path: &Path) {
+        let watcher = WatchPaths::resolve(repo_path)
+            .and_then(|paths| RepoWatcher::start(&paths, self.tx.clone()));
+        match watcher {
+            Ok(watcher) => *self.watcher.lock().unwrap() = Some(watcher),
+            Err(err) => {
+                self.tx.send(AppEvent::NotifyWarn(format!(
+                    "Automatic refresh is unavailable: {err}"
+                )));
+            }
+        }
     }
 
     pub fn start(&self) {
@@ -186,9 +213,17 @@ impl EventController {
         self.drain_crossterm_event();
         self.start();
         self.enable_mouse_capture();
+
+        if let Some(watcher) = &*self.watcher.lock().unwrap() {
+            watcher.resume();
+        }
     }
 
     pub fn suspend(&self) {
+        if let Some(watcher) = &*self.watcher.lock().unwrap() {
+            watcher.pause();
+        }
+
         self.stop();
         self.disable_mouse_capture();
 
@@ -198,6 +233,14 @@ impl EventController {
             ratatui::crossterm::terminal::LeaveAlternateScreen
         )
         .unwrap();
+    }
+
+    /// Tells the repository watcher that the repository was loaded, so that the changes it
+    /// already contains are not refreshed again.
+    pub fn mark_repository_loaded(&self) {
+        if let Some(watcher) = &*self.watcher.lock().unwrap() {
+            watcher.mark_reloaded();
+        }
     }
 
     /// Enable the mouse capture, so that mouse events are reported to the application.

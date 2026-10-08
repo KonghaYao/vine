@@ -1,4 +1,6 @@
 [licenses]
-allow = ["MIT", "Apache-2.0", "BSL-1.0", "Unicode-3.0", "Zlib"]
+# CC0-1.0 and ISC are the licenses of the file watching dependencies (notify, inotify) used for
+# the automatic refresh.
+allow = ["MIT", "Apache-2.0", "BSL-1.0", "Unicode-3.0", "Zlib", "CC0-1.0", "ISC"]
 confidence-threshold = 0.8
 exceptions = []

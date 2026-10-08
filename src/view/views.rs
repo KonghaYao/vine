@@ -69,6 +69,14 @@ impl<'a> View<'a> {
     /// For example, mouse events are ignored while the search query is being entered.
     pub fn ignores_mouse_event(&self) -> bool {
         match self {
+            View::List(_) => self.is_searching(),
+            _ => false,
+        }
+    }
+
+    /// Whether a search query is currently being entered.
+    pub fn is_searching(&self) -> bool {
+        match self {
             View::List(view) => matches!(
                 view.as_list_state().search_state(),
                 SearchState::Searching { .. }

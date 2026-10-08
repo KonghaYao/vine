@@ -40,6 +40,8 @@ The default key bindings can be overridden.
 
 Note: <kbd>Ctrl-e/y</kbd> (the `scroll_down`/`scroll_up` keybinds) scroll the list without moving the selection, so the selected commit can be scrolled out of the screen and no row is highlighted while it is out of the screen. Press <kbd>j</kbd>/<kbd>k</kbd> (or any other key that moves the selection) to scroll it back into the screen.
 
+Note: The commit list is also refreshed automatically when the repository is changed by another process, such as a commit or a fetch in another terminal (see `ui.common.auto_refresh`). The refresh key is only needed to refresh it by hand.
+
 #### Mouse (Commit List)
 
 The mouse operations below can be used while the mouse is enabled by `ui.common.mouse`.

@@ -85,7 +85,7 @@ impl<'a> GitRepository<'a> {
         println!("{}", String::from_utf8(output.stdout).unwrap())
     }
 
-    fn run(&self, args: &[&str], datetime_str: &str) -> std::process::Output {
+    pub(crate) fn run(&self, args: &[&str], datetime_str: &str) -> std::process::Output {
         let output = Command::new("git")
             .args(args)
             .current_dir(self.path)
