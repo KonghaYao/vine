@@ -5,7 +5,7 @@
 Serie renders the commit graph in one of the following ways:
 
 - ASCII graph
-  - Unicode box-drawing characters (`┃ ─ ╭ ╮ ╰ ╯`), colored with the graph colors. Every terminal can display it, so it is the default: the image protocols are used only when they are selected explicitly.
+  - Unicode box-drawing characters (`● ○ │ ─ ╭ ╮ ╰ ╯`), colored with the graph colors. Every terminal can display it, so it is the default: the image protocols are used only when they are selected explicitly.
 - [Inline Images Protocol (iTerm2)](https://iterm2.com/documentation-images.html)
 - [Terminal graphics protocol (kitty)](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
   - Supports both the existing graphics protocol mode and [the Unicode placeholder](https://sw.kovidgoyal.net/kitty/graphics-protocol/#unicode-placeholders) mode.
