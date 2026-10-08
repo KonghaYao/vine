@@ -6,8 +6,8 @@ use std::{
 };
 
 use ratatui::{
-    crossterm::event::{KeyCode, KeyEvent, MouseEventKind},
-    layout::{Constraint, Layout, Rect},
+    crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind},
+    layout::{Constraint, Layout, Position, Rect},
     style::{Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, Padding, Paragraph},
@@ -22,10 +22,11 @@ use crate::{
     external::{
         copy_to_clipboard, exec_user_command, exec_user_command_suspend, ExternalCommandParameters,
     },
-    git::{self, Commit, CommitHash, FileChange, Head, Ref, Repository},
+    git::{self, BranchTracking, Commit, CommitHash, FileChange, Head, Ref, Repository},
     git_action::{
         self, action_feedback, commit_menu_entries, ref_menu_entries, switch_actions_for_ref,
         write_action_error, ActionFeedback, ActionMenuContext, ActionMenuEntry, GitAction,
+        MenuAction,
     },
     graph::GraphImageManager,
     keybind::KeyBind,
@@ -68,6 +69,195 @@ enum StatusLine {
     NotificationError(String),
 }
 
+/// The branch that is checked out, as it is shown in the status bar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HeadName {
+    /// The name of the branch, which is also the branch that is pushed to a remote.
+    Branch(String),
+    /// The short hash of the commit that is checked out.
+    Detached(String),
+}
+
+impl HeadName {
+    /// The name of the branch, or `None` when HEAD is detached.
+    fn branch(&self) -> Option<&str> {
+        match self {
+            HeadName::Branch(name) => Some(name),
+            HeadName::Detached(_) => None,
+        }
+    }
+
+    /// The text of the segment of HEAD.
+    fn text(&self) -> String {
+        match self {
+            HeadName::Branch(name) => name.clone(),
+            HeadName::Detached(short_hash) => format!("detached {short_hash}"),
+        }
+    }
+}
+
+/// What a click on the push segment of the status bar does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PushTarget {
+    /// The branch is pushed to this remote.
+    Remote(String),
+    /// The branch does not track a remote and the repository has several, so the remote to push to
+    /// is chosen in an action menu.
+    ChooseRemote,
+}
+
+impl PushTarget {
+    /// The name shown by the push segment.
+    fn label(&self) -> &str {
+        match self {
+            PushTarget::Remote(remote) => remote,
+            PushTarget::ChooseRemote => "push",
+        }
+    }
+}
+
+/// A segment of the bottom status bar.
+///
+/// The segments are rendered from left to right, separated by two spaces, and the segments without
+/// data are left out. New operations are added as new segments, so that the bar stays a list of
+/// independent parts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StatusBarSegment {
+    /// The branch that is checked out, or the short hash of a detached HEAD.
+    Branch(String),
+    /// The number of commits the branch is ahead of its upstream.
+    Ahead(usize),
+    /// The number of commits the branch is behind its upstream.
+    Behind(usize),
+    /// The push of the current branch, named by the remote it is pushed to.
+    Push { label: String },
+}
+
+impl StatusBarSegment {
+    /// The text of the segment.
+    fn text(&self) -> String {
+        match self {
+            StatusBarSegment::Branch(name) => name.clone(),
+            StatusBarSegment::Ahead(n) => format!("↑{n}"),
+            StatusBarSegment::Behind(n) => format!("↓{n}"),
+            StatusBarSegment::Push { label } => format!("⇡ {label}"),
+        }
+    }
+}
+
+/// The state of the bottom status bar, which is loaded when the application is created.
+///
+/// The state is loaded again with the application, so that the bar follows the changes that are
+/// made by the application and those that are made outside of it.
+#[derive(Debug, Default)]
+struct StatusBar {
+    /// The branch that is checked out, or `None` when the repository has no HEAD.
+    head: Option<HeadName>,
+    /// How the branch that is checked out tracks its upstream.
+    tracking: BranchTracking,
+    /// The names of the remotes of the repository.
+    remotes: Vec<String>,
+    /// Whether the git actions are enabled; the push segment is not shown when they are not.
+    actions_enabled: bool,
+}
+
+impl StatusBar {
+    /// Loads the state of the status bar of the repository.
+    fn new(repository: &Repository, actions_enabled: bool) -> Self {
+        let head = match repository.head() {
+            Head::Branch { name } => Some(HeadName::Branch(name.clone())),
+            Head::Detached { target } => Some(HeadName::Detached(target.as_short_hash().into())),
+            Head::None => None,
+        };
+        StatusBar {
+            head,
+            tracking: git::branch_tracking(repository.path()),
+            remotes: git::load_remotes(repository.path()),
+            actions_enabled,
+        }
+    }
+
+    /// The segments to render, in the order they are rendered.
+    fn segments(&self) -> Vec<StatusBarSegment> {
+        let mut segments = Vec::new();
+        if let Some(text) = self.head.as_ref().map(HeadName::text) {
+            segments.push(StatusBarSegment::Branch(text));
+        }
+        if self.tracking.ahead > 0 {
+            segments.push(StatusBarSegment::Ahead(self.tracking.ahead));
+        }
+        if self.tracking.behind > 0 {
+            segments.push(StatusBarSegment::Behind(self.tracking.behind));
+        }
+        if let Some(target) = self.push_target() {
+            segments.push(StatusBarSegment::Push {
+                label: target.label().into(),
+            });
+        }
+        segments
+    }
+
+    /// What a click on the push segment does, or `None` when the push segment is not shown.
+    fn push_target(&self) -> Option<PushTarget> {
+        if !self.actions_enabled {
+            return None;
+        }
+        // a detached HEAD is not pushed to the remote of a branch
+        self.branch()?;
+        push_target(&self.tracking, &self.remotes)
+    }
+
+    /// The branch that is pushed to a remote when the push segment is clicked.
+    fn branch(&self) -> Option<&str> {
+        self.head.as_ref()?.branch()
+    }
+}
+
+/// The remote the status bar pushes the current branch to, or `None` when there is nothing to push
+/// to.
+///
+/// The remote of the upstream is used when the branch tracks one. A branch that does not track one
+/// is pushed to the only remote of the repository, and the remote is chosen in an action menu when
+/// there are several.
+fn push_target(tracking: &BranchTracking, remotes: &[String]) -> Option<PushTarget> {
+    if let Some(remote) = &tracking.remote {
+        return Some(PushTarget::Remote(remote.clone()));
+    }
+    match remotes {
+        [] => None,
+        [only] => Some(PushTarget::Remote(only.clone())),
+        _ => Some(PushTarget::ChooseRemote),
+    }
+}
+
+/// The space on the left of the status bar.
+const STATUS_BAR_PADDING: u16 = 1;
+/// The number of spaces between two segments of the status bar.
+const STATUS_BAR_SEPARATOR: u16 = 2;
+
+/// The layout of the status bar: every segment with the area it is rendered in.
+///
+/// The line is truncated at the last segment that fits in the area: the segments that follow are
+/// dropped, and a segment is never split, so that the area of a segment always matches its text.
+fn status_bar_layout(segments: &[StatusBarSegment], area: Rect) -> Vec<(StatusBarSegment, Rect)> {
+    let mut layout: Vec<(StatusBarSegment, Rect)> = Vec::new();
+    let mut x = area.x.saturating_add(STATUS_BAR_PADDING);
+    for segment in segments {
+        if !layout.is_empty() {
+            x = x.saturating_add(STATUS_BAR_SEPARATOR);
+        }
+        let Ok(width) = u16::try_from(console::measure_text_width(&segment.text())) else {
+            break;
+        };
+        if width == 0 || x.saturating_add(width) > area.right() {
+            break;
+        }
+        layout.push((segment.clone(), Rect::new(x, area.y, width, 1)));
+        x = x.saturating_add(width);
+    }
+    layout
+}
+
 #[derive(Clone, Copy)]
 pub enum InitialSelection {
     Latest,
@@ -98,12 +288,23 @@ struct AppStatus {
     status_line: StatusLine,
     numeric_prefix: String,
     view_area: Rect,
+    /// The area of the push segment of the status bar, recorded while rendering.
+    status_bar_push_area: Option<Rect>,
+}
+
+impl AppStatus {
+    /// Whether the position is on the push segment of the status bar of the last rendered frame.
+    fn is_on_status_bar_push(&self, position: Position) -> bool {
+        self.status_bar_push_area
+            .is_some_and(|area| area.contains(position))
+    }
 }
 
 #[derive(Debug)]
 pub struct App<'a> {
     repository: &'a Repository,
     view: View<'a>,
+    status_bar: StatusBar,
     app_status: AppStatus,
     /// Whether a remote action is running in the background.
     remote_action_in_progress: bool,
@@ -168,9 +369,12 @@ impl<'a> App<'a> {
         }
         let view = View::of_list(commit_list_state, ctx.clone(), ec.sender());
 
+        let status_bar = StatusBar::new(repository, ctx.actions_config.enable);
+
         let mut app = Self {
             repository,
             view,
+            status_bar,
             app_status: AppStatus::default(),
             remote_action_in_progress: false,
             pending_actions: VecDeque::new(),
@@ -279,6 +483,12 @@ impl App<'_> {
                         || self.app_status.status_line.blocks_mouse_events()
                         || self.view.ignores_mouse_event()
                     {
+                        continue;
+                    }
+                    // A click on the push segment of the status bar pushes the current branch,
+                    // and is not passed to the view
+                    if self.is_status_bar_push_click(&mouse) {
+                        self.push_current_branch();
                         continue;
                     }
                     // Only the commit list uses the movement of the mouse, for the hover of its
@@ -440,7 +650,7 @@ impl App<'_> {
 
     fn prepare_render(&mut self, terminal: &mut DefaultTerminal) -> Result<(), std::io::Error> {
         let area: Rect = terminal.size()?.into();
-        let [view_area, _] = split_app_areas(area);
+        let [view_area, _, _] = split_app_areas(area);
         self.update_state(view_area);
         self.view.update_layout(view_area);
         self.view.prepare_graph_uploads();
@@ -471,12 +681,39 @@ impl App<'_> {
             .bg(self.ctx.color_theme.bg);
         f.render_widget(base, f.area());
 
-        let [view_area, status_line_area] = split_app_areas(f.area());
+        let [view_area, status_line_area, status_bar_area] = split_app_areas(f.area());
 
         self.update_state(view_area);
 
         self.view.render(f, view_area);
         self.render_status_line(f, status_line_area);
+        self.render_status_bar(f, status_bar_area);
+    }
+
+    /// Renders the status bar, which is the last line of the screen.
+    ///
+    /// The area of the push segment is recorded while rendering, so that a click can be matched to
+    /// the segment under the cursor.
+    fn render_status_bar(&mut self, f: &mut Frame, area: Rect) {
+        let base_style = Style::default()
+            .fg(self.ctx.color_theme.status_bar_fg)
+            .bg(self.ctx.color_theme.status_bar_bg);
+        f.buffer_mut().set_style(area, base_style);
+
+        self.app_status.status_bar_push_area = None;
+        let layout = status_bar_layout(&self.status_bar.segments(), area);
+        for (segment, rect) in layout {
+            let mut style = base_style;
+            if matches!(segment, StatusBarSegment::Push { .. }) {
+                self.app_status.status_bar_push_area = Some(rect);
+                if self.ctx.ui_config.common.mouse {
+                    // the push segment is clickable, which is hinted by its bold style
+                    style = style.add_modifier(Modifier::BOLD);
+                }
+            }
+            f.buffer_mut()
+                .set_string(rect.x, rect.y, segment.text(), style);
+        }
     }
 }
 
@@ -571,8 +808,16 @@ impl App<'_> {
     }
 }
 
-fn split_app_areas(area: Rect) -> [Rect; 2] {
-    Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).areas(area)
+/// The area of the view, of the message line, and of the status bar, from top to bottom.
+///
+/// The status bar is the last line of the screen, under the divider and the message line.
+fn split_app_areas(area: Rect) -> [Rect; 3] {
+    Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(2),
+        Constraint::Length(1),
+    ])
+    .areas(area)
 }
 
 impl App<'_> {
@@ -878,6 +1123,64 @@ impl App<'_> {
         if let View::ActionMenu(ref mut view) = self.view {
             self.view = view.take_before_view();
         }
+    }
+
+    /// Whether the mouse event is a left click on the push segment of the status bar.
+    fn is_status_bar_push_click(&self, mouse: &MouseEvent) -> bool {
+        matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            && self
+                .app_status
+                .is_on_status_bar_push(Position::new(mouse.column, mouse.row))
+    }
+
+    /// Pushes the branch that is checked out, like a click on the push segment of the status bar.
+    ///
+    /// The push runs in the background like any other remote action. The remote to push to is
+    /// chosen in an action menu when the branch does not track one and the repository has several.
+    fn push_current_branch(&mut self) {
+        let Some(branch) = self.status_bar.branch().map(String::from) else {
+            return;
+        };
+        match self.status_bar.push_target() {
+            Some(PushTarget::Remote(remote)) => {
+                self.ec
+                    .send(AppEvent::ExecuteGitAction(Box::new(GitAction::Push {
+                        remote,
+                        branch,
+                    })));
+            }
+            Some(PushTarget::ChooseRemote) => self.open_push_menu(&branch),
+            None => {}
+        }
+    }
+
+    /// Opens the menu that chooses the remote to push the given branch to.
+    fn open_push_menu(&mut self, branch: &str) {
+        if matches!(self.view, View::ActionMenu(_)) {
+            return;
+        }
+        let entries = self
+            .status_bar
+            .remotes
+            .iter()
+            .map(|remote| ActionMenuEntry::Action {
+                label: format!("Push to '{remote}'"),
+                action: MenuAction::Action(GitAction::Push {
+                    remote: remote.clone(),
+                    branch: branch.into(),
+                }),
+            })
+            .collect();
+        let refs = self.repository.all_refs().into_iter().cloned().collect();
+        let before = std::mem::take(&mut self.view);
+        self.view = View::of_action_menu(
+            before,
+            action_menu_title(branch),
+            entries,
+            refs,
+            self.ctx.clone(),
+            self.ec.sender(),
+        );
     }
 
     /// Switches the repository to the ref that was double clicked in the commit list.
@@ -1322,5 +1625,243 @@ mod tests {
 
         assert_eq!(line.spans.len(), 1);
         assert_eq!(line.spans[0].content.as_ref(), "left");
+    }
+
+    /// The segments of a branch that is ahead of and behind its upstream, and that is pushed to
+    /// `origin`.
+    fn status_bar_segments() -> Vec<StatusBarSegment> {
+        vec![
+            StatusBarSegment::Branch("main".into()),
+            StatusBarSegment::Ahead(1),
+            StatusBarSegment::Behind(1),
+            StatusBarSegment::Push {
+                label: "origin".into(),
+            },
+        ]
+    }
+
+    /// The text of the segments and the area each of them is rendered in.
+    fn status_bar_texts(layout: &[(StatusBarSegment, Rect)]) -> Vec<(String, Rect)> {
+        layout
+            .iter()
+            .map(|(segment, rect)| (segment.text(), *rect))
+            .collect()
+    }
+
+    #[test]
+    fn test_status_bar_layout_renders_the_segments_from_left_to_right() {
+        let area = Rect::new(0, 23, 40, 1);
+
+        let layout = status_bar_layout(&status_bar_segments(), area);
+
+        // one space of padding, then the segments separated by two spaces
+        assert_eq!(
+            status_bar_texts(&layout),
+            vec![
+                ("main".into(), Rect::new(1, 23, 4, 1)),
+                ("↑1".into(), Rect::new(7, 23, 2, 1)),
+                ("↓1".into(), Rect::new(11, 23, 2, 1)),
+                ("⇡ origin".into(), Rect::new(15, 23, 8, 1)),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_status_bar_layout_is_truncated_at_the_last_segment_that_fits() {
+        let segments = status_bar_segments();
+
+        // "↓1" would end on the 13th column, which is outside of the area
+        let layout = status_bar_layout(&segments, Rect::new(0, 23, 12, 1));
+        assert_eq!(
+            status_bar_texts(&layout),
+            vec![
+                ("main".into(), Rect::new(1, 23, 4, 1)),
+                ("↑1".into(), Rect::new(7, 23, 2, 1)),
+            ]
+        );
+
+        // only the branch fits
+        let layout = status_bar_layout(&segments, Rect::new(0, 23, 6, 1));
+        assert_eq!(status_bar_texts(&layout).len(), 1);
+
+        // nothing fits, and nothing panics
+        assert!(status_bar_layout(&segments, Rect::new(0, 23, 4, 1)).is_empty());
+        assert!(status_bar_layout(&segments, Rect::new(0, 23, 0, 1)).is_empty());
+        assert!(status_bar_layout(&segments, Rect::new(0, 23, u16::MAX, 1)).len() == 4);
+    }
+
+    #[test]
+    fn test_the_push_segment_is_hit_by_a_click_on_its_area() {
+        let area = Rect::new(0, 23, 40, 1);
+        let push_area = status_bar_layout(&status_bar_segments(), area)
+            .into_iter()
+            .find(|(segment, _)| matches!(segment, StatusBarSegment::Push { .. }))
+            .map(|(_, rect)| rect);
+        let app_status = AppStatus {
+            status_bar_push_area: push_area,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            app_status.status_bar_push_area,
+            Some(Rect::new(15, 23, 8, 1))
+        );
+        assert!(app_status.is_on_status_bar_push(Position::new(15, 23)));
+        assert!(app_status.is_on_status_bar_push(Position::new(22, 23)));
+        // the separator, the segment before, and the line above are not part of the segment
+        assert!(!app_status.is_on_status_bar_push(Position::new(14, 23)));
+        assert!(!app_status.is_on_status_bar_push(Position::new(23, 23)));
+        assert!(!app_status.is_on_status_bar_push(Position::new(15, 22)));
+
+        // the push segment is not clickable when it is not rendered
+        assert!(!AppStatus::default().is_on_status_bar_push(Position::new(15, 23)));
+    }
+
+    #[test]
+    fn test_status_bar_segments_of_a_branch_that_tracks_a_remote() {
+        let status_bar = StatusBar {
+            head: Some(HeadName::Branch("main".into())),
+            tracking: BranchTracking {
+                upstream: Some("origin/main".into()),
+                remote: Some("origin".into()),
+                ahead: 1,
+                behind: 2,
+            },
+            remotes: vec!["origin".into(), "fork".into()],
+            actions_enabled: true,
+        };
+
+        // the numbers are shown only when they are not zero, and the push uses the remote of the
+        // upstream even though the repository has several remotes
+        assert_eq!(
+            status_bar.segments(),
+            vec![
+                StatusBarSegment::Branch("main".into()),
+                StatusBarSegment::Ahead(1),
+                StatusBarSegment::Behind(2),
+                StatusBarSegment::Push {
+                    label: "origin".into(),
+                },
+            ]
+        );
+        assert_eq!(
+            status_bar.push_target(),
+            Some(PushTarget::Remote("origin".into()))
+        );
+        assert_eq!(status_bar.branch(), Some("main"));
+    }
+
+    #[test]
+    fn test_status_bar_segments_without_upstream_or_remote() {
+        let mut status_bar = StatusBar {
+            head: Some(HeadName::Branch("main".into())),
+            actions_enabled: true,
+            ..Default::default()
+        };
+        // no upstream and no remote: only the branch, which cannot be pushed
+        assert_eq!(
+            status_bar.segments(),
+            vec![StatusBarSegment::Branch("main".into())]
+        );
+        assert_eq!(status_bar.push_target(), None);
+
+        // a single remote is used when the branch does not track one
+        status_bar.remotes = vec!["origin".into()];
+        assert_eq!(
+            status_bar.push_target(),
+            Some(PushTarget::Remote("origin".into()))
+        );
+
+        // several remotes: the remote is chosen in the menu
+        status_bar.remotes = vec!["origin".into(), "fork".into()];
+        assert_eq!(status_bar.push_target(), Some(PushTarget::ChooseRemote));
+        assert_eq!(
+            status_bar.segments(),
+            vec![
+                StatusBarSegment::Branch("main".into()),
+                StatusBarSegment::Push {
+                    label: "push".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_status_bar_segments_of_a_detached_head() {
+        let status_bar = StatusBar {
+            head: Some(HeadName::Detached("abc1234".into())),
+            tracking: BranchTracking {
+                upstream: Some("origin/main".into()),
+                remote: Some("origin".into()),
+                ahead: 1,
+                behind: 1,
+            },
+            remotes: vec!["origin".into()],
+            actions_enabled: true,
+        };
+
+        // a detached HEAD shows its short hash, and has no branch to push
+        assert_eq!(
+            status_bar.segments(),
+            vec![
+                StatusBarSegment::Branch("detached abc1234".into()),
+                StatusBarSegment::Ahead(1),
+                StatusBarSegment::Behind(1),
+            ]
+        );
+        assert_eq!(status_bar.branch(), None);
+        assert_eq!(status_bar.push_target(), None);
+    }
+
+    #[test]
+    fn test_the_push_segment_is_not_shown_when_the_actions_are_disabled() {
+        let status_bar = StatusBar {
+            head: Some(HeadName::Branch("main".into())),
+            tracking: BranchTracking {
+                upstream: Some("origin/main".into()),
+                remote: Some("origin".into()),
+                ..Default::default()
+            },
+            remotes: vec!["origin".into()],
+            actions_enabled: false,
+        };
+
+        assert_eq!(
+            status_bar.segments(),
+            vec![StatusBarSegment::Branch("main".into())]
+        );
+        assert_eq!(status_bar.push_target(), None);
+    }
+
+    #[test]
+    fn test_push_target_of_a_branch_that_does_not_track_a_remote() {
+        // the only remote, whichever it is
+        assert_eq!(
+            push_target(&BranchTracking::default(), &["fork".into()]),
+            Some(PushTarget::Remote("fork".into()))
+        );
+
+        // no remote at all: there is nothing to push to
+        assert_eq!(push_target(&BranchTracking::default(), &[]), None);
+
+        // several remotes, and nothing to choose one with
+        assert_eq!(
+            push_target(
+                &BranchTracking::default(),
+                &["origin".into(), "fork".into()]
+            ),
+            Some(PushTarget::ChooseRemote)
+        );
+
+        // the remote of the upstream is preferred over the only remote
+        let tracking = BranchTracking {
+            upstream: Some("fork/main".into()),
+            remote: Some("fork".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            push_target(&tracking, &["origin".into(), "fork".into()]),
+            Some(PushTarget::Remote("fork".into()))
+        );
     }
 }

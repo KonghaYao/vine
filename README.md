@@ -96,6 +96,7 @@ The commit list can also be operated with the mouse (enabled by default, see `ui
 - Left click on a commit: select the commit
 - Double click on a ref badge: switch to that ref (a remote branch is checked out as its local branch and pulled, or created as a tracking branch when the local branch does not exist)
 - Hover over a commit: show the `…` more button at the right edge of that row; rest the cursor on it, or left click it, to open the action menu for that commit
+- Left click on the `⇡` segment of the status bar: push the current branch to the remote
 - Wheel up/down: scroll the commit list by 3 rows
 - Drag the scrollbar thumb, or left click on the scrollbar track: scroll the commit list
 
@@ -110,6 +111,18 @@ While the mouse is captured by the application, hold `Shift` to select and copy 
 The commit graph is refreshed automatically (enabled by default, see `ui.common.auto_refresh`) when the repository is changed by another process, such as a commit, a fetch, or a branch switch in another terminal, so there is no need to reload it by hand.
 
 The refresh is postponed while you are entering a search query, while a menu, a dialog or the help screen is open, while the output of a user command is shown, and while a git action is running, and it is performed as soon as the application is idle again. It keeps the selected commit. Set `ui.common.auto_refresh = false` to disable watching the repository; the graph can still be refreshed with <kbd>R</kbd>.
+
+### Status bar
+
+The last line of the screen shows the state of the repository and the operations that can be run on the current branch:
+
+- The name of the branch that is checked out, or `detached <short hash>` when HEAD is detached
+- `↑1` / `↓2`: the number of commits the branch is ahead of and behind its upstream. Each of them is shown only when it is not zero, and neither is shown when the branch does not track an upstream
+- `⇡ origin`: the push of the current branch, which is run by clicking it with the left mouse button
+
+The branch is pushed to the remote of its upstream. A branch that does not track an upstream is pushed to the only remote of the repository, and a menu that lists the remotes is shown when there are several. The push runs in the background like the remote actions of the action menu, and the status bar is reloaded when it finishes. Nothing is pushed from the status bar when the repository has no remote, or when the actions are disabled with `actions.enable = false`.
+
+The colors of the bar can be changed with `color.status_bar_fg` and `color.status_bar_bg`.
 
 ### Actions
 

@@ -342,6 +342,7 @@ fn build_lines(
             ("Double click ref badge", "Switch to that ref"),
             ("Hover", "Show the more button (…) on the row"),
             ("More button (…)", "Hover briefly or click to open the action menu for that commit"),
+            ("Left click on ⇡", "Push the current branch"),
             ("Wheel up/down", "Scroll up/down (selection is unchanged)"),
             ("Scrollbar drag", "Scroll (selection is unchanged)"),
             ("Right click", "Open action menu"),

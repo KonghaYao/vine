@@ -95,6 +95,10 @@ pub struct ColorTheme {
     pub status_warn_fg: RatatuiColor,
     #[default(RatatuiColor::Red)]
     pub status_error_fg: RatatuiColor,
+    #[default(RatatuiColor::White)]
+    pub status_bar_fg: RatatuiColor,
+    #[default(RatatuiColor::Blue)]
+    pub status_bar_bg: RatatuiColor,
 
     #[default(RatatuiColor::DarkGray)]
     pub divider_fg: RatatuiColor,

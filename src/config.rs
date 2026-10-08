@@ -462,6 +462,8 @@ pub struct GraphColorConfig {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::style::Color as RatatuiColor;
+
     use super::*;
 
     #[test]
@@ -610,6 +612,9 @@ mod tests {
             branches = ["#ff0000", "#00ff00", "#0000ff"]
             edge = "#000000"
             background = "#ffffff"
+            [color]
+            status_bar_fg = "black"
+            status_bar_bg = "red"
         "##;
         let actual: Config = toml::from_str::<OptionalConfig>(toml).unwrap().into();
         let expected = Config {
@@ -717,10 +722,37 @@ mod tests {
                 enable: false,
                 confirm_destructive: false,
             },
-            color: ColorTheme::default(),
+            color: ColorTheme {
+                status_bar_fg: RatatuiColor::Black,
+                status_bar_bg: RatatuiColor::Red,
+                ..ColorTheme::default()
+            },
             keybind: None,
         };
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_config_color_status_bar() {
+        // the status bar is white on blue by default
+        let actual = Config::default();
+        assert_eq!(actual.color.status_bar_fg, RatatuiColor::White);
+        assert_eq!(actual.color.status_bar_bg, RatatuiColor::Blue);
+
+        let toml = r#"
+            [color]
+            status_bar_fg = "black"
+            status_bar_bg = "red"
+        "#;
+        let actual: Config = toml::from_str::<OptionalConfig>(toml).unwrap().into();
+        assert_eq!(actual.color.status_bar_fg, RatatuiColor::Black);
+        assert_eq!(actual.color.status_bar_bg, RatatuiColor::Red);
+
+        // the other colors keep their default
+        assert_eq!(
+            actual.color.status_info_fg,
+            ColorTheme::default().status_info_fg
+        );
     }
 
     #[test]
