@@ -621,6 +621,16 @@
           "description": "Color for error messages in the status bar.",
           "default": "red"
         },
+        "status_bar_fg": {
+          "type": "string",
+          "description": "Foreground color for the status bar at the bottom of the screen.",
+          "default": "white"
+        },
+        "status_bar_bg": {
+          "type": "string",
+          "description": "Background color for the status bar at the bottom of the screen.",
+          "default": "blue"
+        },
         "divider_fg": {
           "type": "string",
           "description": "Color for dividers.",

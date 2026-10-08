@@ -110,6 +110,8 @@ status_info_fg = "cyan"
 status_success_fg = "green"
 status_warn_fg = "yellow"
 status_error_fg = "red"
+status_bar_fg = "white"
+status_bar_bg = "blue"
 divider_fg = "dark-gray"
 
 [keybind]

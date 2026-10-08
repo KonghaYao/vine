@@ -94,6 +94,7 @@ The commit list can also be operated with the mouse (enabled by default, see `ui
 
 - Left click on a commit: select the commit
 - Double click on a ref badge: switch to that ref (a remote branch is checked out as its local branch and pulled, or created as a tracking branch when the local branch does not exist)
+- Left click on the `⇡` segment of the status bar: push the current branch to the remote
 - Wheel up/down: scroll the commit list by 3 rows
 - Drag the scrollbar thumb, or left click on the scrollbar track: scroll the commit list
 
@@ -102,6 +103,18 @@ The refs of a commit are shown as reversed badges in front of its subject, with 
 Scrolling with the wheel or the scrollbar does not change the selected commit, in the same way as <kbd>Ctrl-e</kbd>/<kbd>Ctrl-y</kbd>. Note that the selected commit can be scrolled out of the screen, in which case no row is highlighted.
 
 While the mouse is captured by the application, hold `Shift` to select and copy text with your terminal. Set `ui.common.mouse = false` to disable mouse operations and always use the terminal native mouse behavior.
+
+### Status bar
+
+The last line of the screen shows the state of the repository and the operations that can be run on the current branch:
+
+- The name of the branch that is checked out, or `detached <short hash>` when HEAD is detached
+- `↑1` / `↓2`: the number of commits the branch is ahead of and behind its upstream. Each of them is shown only when it is not zero, and neither is shown when the branch does not track an upstream
+- `⇡ origin`: the push of the current branch, which is run by clicking it with the left mouse button
+
+The branch is pushed to the remote of its upstream. A branch that does not track an upstream is pushed to the only remote of the repository, and a menu that lists the remotes is shown when there are several. The push runs in the background like the remote actions of the action menu, and the status bar is reloaded when it finishes. Nothing is pushed from the status bar when the repository has no remote, or when the actions are disabled with `actions.enable = false`.
+
+The colors of the bar can be changed with `color.status_bar_fg` and `color.status_bar_bg`.
 
 ### Actions
 
