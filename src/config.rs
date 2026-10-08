@@ -304,6 +304,10 @@ pub struct UiCommonConfig {
     pub cursor_type: CursorType,
     #[default = true]
     pub mouse: bool,
+    /// Whether to refresh the commit graph automatically when the repository is changed by
+    /// another process.
+    #[default = true]
+    pub auto_refresh: bool,
 }
 
 // Config values are lowercase; PascalCase aliases are kept for backward compatibility.
@@ -505,6 +509,7 @@ mod tests {
                 common: UiCommonConfig {
                     cursor_type: CursorType::Native,
                     mouse: true,
+                    auto_refresh: true,
                 },
                 list: UiListConfig {
                     scrolloff: 0,
@@ -579,6 +584,7 @@ mod tests {
             [ui.common]
             cursor_type = { virtual = "|" }
             mouse = false
+            auto_refresh = false
             [ui.list]
             scrolloff = 3
             columns = ["date", "subject", "hash", "graph"]
@@ -675,6 +681,7 @@ mod tests {
                 common: UiCommonConfig {
                     cursor_type: CursorType::Virtual("|".into()),
                     mouse: false,
+                    auto_refresh: false,
                 },
                 list: UiListConfig {
                     scrolloff: 3,
@@ -767,6 +774,7 @@ mod tests {
                 common: UiCommonConfig {
                     cursor_type: CursorType::Native,
                     mouse: true,
+                    auto_refresh: true,
                 },
                 list: UiListConfig {
                     scrolloff: 0,
@@ -831,6 +839,24 @@ mod tests {
         "#;
         let config: Config = toml::from_str::<OptionalConfig>(toml).unwrap().into();
         assert!(!config.ui.common.mouse);
+        assert_eq!(config.ui.common.cursor_type, CursorType::Native);
+    }
+
+    #[test]
+    fn test_config_ui_common_auto_refresh_defaults_to_true() {
+        let config: Config = toml::from_str::<OptionalConfig>("").unwrap().into();
+        assert!(config.ui.common.auto_refresh);
+    }
+
+    #[test]
+    fn test_config_ui_common_auto_refresh_can_be_disabled() {
+        let toml = r#"
+            [ui.common]
+            auto_refresh = false
+        "#;
+        let config: Config = toml::from_str::<OptionalConfig>(toml).unwrap().into();
+        assert!(!config.ui.common.auto_refresh);
+        assert!(config.ui.common.mouse);
         assert_eq!(config.ui.common.cursor_type, CursorType::Native);
     }
 

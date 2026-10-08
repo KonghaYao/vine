@@ -240,6 +240,11 @@
               "type": "boolean",
               "description": "Whether to enable mouse support.",
               "default": true
+            },
+            "auto_refresh": {
+              "type": "boolean",
+              "description": "Whether to refresh the commit graph automatically when the repository is changed by another process.",
+              "default": true
             }
           },
           "additionalProperties": false

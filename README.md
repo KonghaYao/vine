@@ -104,6 +104,12 @@ Scrolling with the wheel or the scrollbar does not change the selected commit, i
 
 While the mouse is captured by the application, hold `Shift` to select and copy text with your terminal. Set `ui.common.mouse = false` to disable mouse operations and always use the terminal native mouse behavior.
 
+### Auto refresh
+
+The commit graph is refreshed automatically (enabled by default, see `ui.common.auto_refresh`) when the repository is changed by another process, such as a commit, a fetch, or a branch switch in another terminal, so there is no need to reload it by hand.
+
+The refresh is postponed while you are entering a search query, while a menu, a dialog or the help screen is open, while the output of a user command is shown, and while a git action is running, and it is performed as soon as the application is idle again. It keeps the selected commit. Set `ui.common.auto_refresh = false` to disable watching the repository; the graph can still be refreshed with <kbd>R</kbd>.
+
 ### Actions
 
 Pressing <kbd>x</kbd> (or right clicking the commit list) opens the action menu for the selected commit or ref, where common git operations (create/checkout/merge/rebase/rename/delete branches, copying the commit hash, running user commands, ...) can be executed without leaving the application.

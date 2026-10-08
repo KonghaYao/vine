@@ -11,6 +11,7 @@ mod keybind;
 mod protocol;
 mod search;
 mod view;
+mod watch;
 mod widget;
 
 #[cfg(test)]
@@ -24,6 +25,10 @@ mod mailmap_tests;
 #[cfg(test)]
 #[path = "tests/git.rs"]
 mod test_git;
+
+#[cfg(test)]
+#[path = "tests/watch.rs"]
+mod watch_tests;
 
 use std::{path::Path, rc::Rc};
 
@@ -180,11 +185,16 @@ fn main() -> Result<()> {
     });
 
     let ec = event::EventController::init(ctx.ui_config.common.mouse);
+    if ctx.ui_config.common.auto_refresh {
+        ec.watch_repository(Path::new("."));
+    }
     let mut refresh_view_context = None;
     let mut terminal = None;
 
     let ret = loop {
         let repository = git::Repository::load(Path::new("."), order, max_count, mailmap)?;
+        // The changes of the repository seen so far are part of what was just loaded.
+        ec.mark_repository_loaded();
 
         let graph = graph::calc_graph(&repository, primary_branch.as_deref());
 
