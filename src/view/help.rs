@@ -196,8 +196,16 @@ impl<'a> HelpView<'a> {
 
     fn update_state(&mut self, area: Rect) {
         self.height = area.height as usize;
-        self.offset = self.offset.min(self.help_key_lines.len() - 1)
+        self.offset = clamp_offset(self.offset, self.help_key_lines.len(), self.height);
     }
+}
+
+/// The offset of the help view, clamped so that the view never scrolls past the last line.
+///
+/// The last page shows the last line at the bottom of the view, so the maximum offset is the
+/// number of lines that do not fit in the view.
+fn clamp_offset(offset: usize, line_count: usize, height: usize) -> usize {
+    offset.min(line_count.saturating_sub(height))
 }
 
 #[rustfmt::skip]
@@ -442,4 +450,25 @@ fn join_span_groups_with_space(span_groups: Vec<Vec<Span<'static>>>) -> Line<'st
         }
     }
     Line::from(spans)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_the_help_view_does_not_scroll_past_the_last_line() {
+        // The last page shows the last lines at the bottom of the view
+        assert_eq!(clamp_offset(usize::MAX, 50, 20), 30);
+        assert_eq!(clamp_offset(35, 50, 20), 30);
+        assert_eq!(clamp_offset(7, 50, 20), 7);
+
+        // There is nothing to scroll when the lines fit in the view
+        assert_eq!(clamp_offset(usize::MAX, 20, 20), 0);
+        assert_eq!(clamp_offset(usize::MAX, 3, 20), 0);
+
+        // There is no line, and the view may not be laid out yet
+        assert_eq!(clamp_offset(0, 0, 20), 0);
+        assert_eq!(clamp_offset(usize::MAX, 0, 0), 0);
+    }
 }

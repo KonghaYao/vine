@@ -54,7 +54,7 @@ The mouse operations below can be used while the mouse is enabled by `ui.common.
 | Rest on the more button            | Open the action menu for the commit of the row after a short moment     |
 | Left click on the more button      | Open the action menu for the commit of the row                          |
 | Right click                        | Open the action menu for the commit under the cursor                    |
-| Wheel up/down                      | Scroll the list by 3 rows                                               |
+| Wheel up/down                      | Scroll the list by one row per event                                    |
 | Drag the scrollbar thumb           | Scroll the list                                                         |
 | Left click on the scrollbar track  | Scroll the list to the clicked position, then continue dragging         |
 | Left click on the `⇡` segment of the status bar | Push the current branch to the remote                     |
