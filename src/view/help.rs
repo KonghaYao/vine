@@ -108,7 +108,7 @@ impl HelpView<'_> {
     }
 
     pub fn handle_mouse_event(&mut self, _mouse: MouseEvent) {
-        // TODO: mouse operations on this view are implemented in the following steps
+        // The help view has no mouse operations: it only reacts to keys
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect) {

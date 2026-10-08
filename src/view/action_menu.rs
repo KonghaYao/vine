@@ -20,6 +20,32 @@ use crate::{
     },
 };
 
+/// The answer of the confirmation dialog for a key event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfirmationAnswer {
+    /// The action is confirmed (`y`).
+    Confirm,
+    /// The action is cancelled (`n`, `Esc` or `Enter`).
+    Cancel,
+    /// The dialog is kept open.
+    Pending,
+}
+
+/// The answer of the confirmation dialog for the given key event.
+///
+/// The dialog is answered with `y` or `n`; `Esc` (and any other key that is not `y`) cancels it,
+/// so that the menu is shown again.
+fn confirmation_answer(event: UserEvent, key: KeyEvent) -> ConfirmationAnswer {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => ConfirmationAnswer::Confirm,
+        KeyCode::Char('n') | KeyCode::Char('N') => ConfirmationAnswer::Cancel,
+        _ => match event {
+            UserEvent::Confirm | UserEvent::Cancel | UserEvent::Close => ConfirmationAnswer::Cancel,
+            _ => ConfirmationAnswer::Pending,
+        },
+    }
+}
+
 /// The popup rendered with the action menu.
 #[derive(Debug)]
 enum ActionPopup {
@@ -345,16 +371,74 @@ impl ActionMenuView<'_> {
         event: UserEvent,
         key: KeyEvent,
     ) -> ActionPopup {
-        match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
+        match confirmation_answer(event, key) {
+            ConfirmationAnswer::Confirm => {
                 self.execute_action(action);
                 ActionPopup::None
             }
-            _ => match event {
-                // The action is not confirmed, so the menu is shown again
-                UserEvent::Confirm | UserEvent::Cancel | UserEvent::Close => ActionPopup::None,
-                _ => ActionPopup::Confirm { action },
-            },
+            // The action is not confirmed, so the menu is shown again
+            ConfirmationAnswer::Cancel => ActionPopup::None,
+            ConfirmationAnswer::Pending => ActionPopup::Confirm { action },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn press(c: char) -> KeyEvent {
+        KeyEvent::from(KeyCode::Char(c))
+    }
+
+    #[test]
+    fn test_confirmation_dialog_is_answered_with_y_and_n() {
+        assert_eq!(
+            confirmation_answer(UserEvent::Unknown, press('y')),
+            ConfirmationAnswer::Confirm
+        );
+        assert_eq!(
+            confirmation_answer(UserEvent::Unknown, press('Y')),
+            ConfirmationAnswer::Confirm
+        );
+        assert_eq!(
+            confirmation_answer(UserEvent::Unknown, press('n')),
+            ConfirmationAnswer::Cancel
+        );
+        assert_eq!(
+            confirmation_answer(UserEvent::Unknown, press('N')),
+            ConfirmationAnswer::Cancel
+        );
+    }
+
+    #[test]
+    fn test_confirmation_dialog_is_cancelled_by_escape_and_enter() {
+        for event in [UserEvent::Cancel, UserEvent::Close, UserEvent::Confirm] {
+            assert_eq!(
+                confirmation_answer(event, KeyEvent::from(KeyCode::Esc)),
+                ConfirmationAnswer::Cancel,
+                "{event:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_confirmation_dialog_ignores_other_keys() {
+        // `n` is bound to `go_to_next` by default, so it must not be treated as navigation
+        assert_eq!(
+            confirmation_answer(UserEvent::GoToNext, press('n')),
+            ConfirmationAnswer::Cancel
+        );
+        for (event, key) in [
+            (UserEvent::NavigateDown, KeyEvent::from(KeyCode::Down)),
+            (UserEvent::Quit, press('q')),
+            (UserEvent::Unknown, KeyEvent::from(KeyCode::Enter)),
+        ] {
+            assert_eq!(
+                confirmation_answer(event, key),
+                ConfirmationAnswer::Pending,
+                "{event:?} {key:?}"
+            );
         }
     }
 }

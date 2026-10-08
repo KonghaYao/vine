@@ -22,7 +22,7 @@ use crate::{
     external::{
         copy_to_clipboard, exec_user_command, exec_user_command_suspend, ExternalCommandParameters,
     },
-    git::{self, Commit, FileChange, Head, Ref, Repository},
+    git::{self, Commit, CommitHash, FileChange, Head, Ref, Repository},
     git_action::{
         self, action_feedback, commit_menu_entries, ref_menu_entries, switch_actions_for_ref,
         write_action_error, ActionFeedback, ActionMenuContext, ActionMenuEntry, GitAction,
@@ -34,6 +34,16 @@ use crate::{
     view::{RefreshViewContext, View},
     widget::commit_list::{CommitInfo, CommitListState},
 };
+
+impl StatusLine {
+    /// Whether the status line is in a state where mouse events are ignored.
+    ///
+    /// Mouse events are ignored while a text input is active (like a search query) and while a
+    /// remote action is running in the background, so that they cannot run a second action.
+    fn blocks_mouse_events(&self) -> bool {
+        matches!(self, StatusLine::Input { .. } | StatusLine::Loading(_))
+    }
+}
 
 #[derive(Debug, Default)]
 enum StatusLine {
@@ -250,9 +260,10 @@ impl App<'_> {
                 }
                 AppEvent::Mouse(mouse) => {
                     // Ignore mouse events when the mouse is disabled by the configuration,
-                    // or while the search query is being entered
+                    // while the search query is being entered, or while a remote action is
+                    // running in the background (keys are ignored in the same states)
                     if !self.ctx.ui_config.common.mouse
-                        || matches!(self.app_status.status_line, StatusLine::Input { .. })
+                        || self.app_status.status_line.blocks_mouse_events()
                         || self.view.ignores_mouse_event()
                     {
                         continue;
@@ -734,7 +745,7 @@ impl App<'_> {
         let before = std::mem::take(&mut self.view);
         self.view = View::of_action_menu(
             before,
-            format!("Actions - {name}"),
+            action_menu_title(&name),
             entries,
             refs,
             self.ctx.clone(),
@@ -798,10 +809,7 @@ impl App<'_> {
             &self.ctx.core_config.user_command.commands,
             menu_context,
         );
-        Some((
-            format!("Actions - {}", commit_hash.as_short_hash()),
-            entries,
-        ))
+        Some((commit_action_menu_name(&commit_hash), entries))
     }
 
     fn close_actions(&mut self) {
@@ -1048,6 +1056,19 @@ fn status_line_with_metadata(
     ])
 }
 
+/// The title of the action menu of a target with the given name.
+fn action_menu_title(name: &str) -> String {
+    format!("Actions - {name}")
+}
+
+/// The name of the target of the action menu of a commit.
+///
+/// The name is not prefixed with the title of the menu, so that the prefix is added only when the
+/// menu is created.
+fn commit_action_menu_name(commit_hash: &CommitHash) -> String {
+    commit_hash.as_short_hash().to_string()
+}
+
 fn selected_commit_details(
     repository: &Repository,
     commit_list_state: &CommitListState,
@@ -1159,6 +1180,47 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+
+    #[test]
+    fn test_mouse_events_are_ignored_for_input_and_loading() {
+        assert!(StatusLine::Input {
+            message: String::new(),
+            cursor_position: 0,
+            metadata: String::new(),
+        }
+        .blocks_mouse_events());
+        assert!(StatusLine::Loading("Pushing 'main' to 'origin'...".into()).blocks_mouse_events());
+
+        for status_line in [
+            StatusLine::None,
+            StatusLine::Transient("message".into()),
+            StatusLine::SearchResult {
+                message: String::new(),
+                options: String::new(),
+                matched: true,
+            },
+            StatusLine::NotificationInfo("message".into()),
+            StatusLine::NotificationSuccess("message".into()),
+            StatusLine::NotificationWarn("message".into()),
+            StatusLine::NotificationError("message".into()),
+        ] {
+            assert!(!status_line.blocks_mouse_events(), "{status_line:?}");
+        }
+    }
+
+    #[test]
+    fn test_action_menu_title_has_a_single_prefix() {
+        // the name of a commit is its short hash, and the refs are named by their ref name
+        let commit_hash = CommitHash::from("abcdef0123456789abcdef0123456789abcdef01");
+        assert_eq!(
+            action_menu_title(&commit_action_menu_name(&commit_hash)),
+            "Actions - abcdef0"
+        );
+        assert_eq!(action_menu_title("v1.0.0"), "Actions - v1.0.0");
+
+        // the name never contains the prefix of the title
+        assert!(!commit_action_menu_name(&commit_hash).contains("Actions"));
+    }
 
     #[rustfmt::skip]
     #[rstest]
