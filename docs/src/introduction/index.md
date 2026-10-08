@@ -1,6 +1,6 @@
 # Introduction
 
-**Serie** ([`/zéːriə/`](https://lusingander.github.io/serie/faq/index.html#how-do-i-pronounce-serie)) is a TUI application that uses the terminal emulators' image display protocol to render commit graphs like `git log --graph --all`.
+**Serie** ([`/zéːriə/`](https://lusingander.github.io/serie/faq/index.html#how-do-i-pronounce-serie)) is a TUI application that renders commit graphs like `git log --graph --all`, using the terminal emulators' image display protocol for high-quality output where it is available, and a Unicode box-drawing fallback in any other terminal.
 
 <img src="https://raw.githubusercontent.com/lusingander/serie/master/img/demo.gif">
 
@@ -21,7 +21,7 @@ Personally, I found the output from `git log --graph` difficult to read, even wi
 
 - Implement a fully-featured Git client.
 - Create a TUI application with a complex UI.
-- Works in any terminal environment.
+- Render the graph with the same quality everywhere: terminals without an image display protocol use the simpler Unicode fallback.
 
 ---
 

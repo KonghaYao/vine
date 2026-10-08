@@ -9,11 +9,25 @@ It behaves similarly to the `--max-count` option of `git log`.
 
 ## -p, --protocol \<TYPE\>
 
-A protocol type for rendering images of commit graphs.
+The protocol used to render the commit graph.
 
-_Possible values:_ `auto`, `iterm`, `kitty`, `kitty-unicode`
+_Possible values:_ `auto`, `iterm`, `kitty`, `kitty-unicode`, `ascii`
 
-By default `auto` will guess the best supported protocol for the current terminal (if listed in [Supported terminal emulators](./compatibility.md#supported-terminal-emulators)).
+- `iterm`: [iTerm2 inline images protocol](https://iterm2.com/documentation-images.html)
+- `kitty`: [kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
+- `kitty-unicode`: kitty graphics protocol with [Unicode placeholders](https://sw.kovidgoyal.net/kitty/graphics-protocol/#unicode-placeholders), which also works under tmux
+- `ascii`: Unicode box-drawing characters (`● │ ─ ╭ ╮ ╰ ╯`), which works in any terminal
+
+By default `auto` picks the best supported mode for the current terminal:
+
+1. Inside tmux (`TMUX`, `TERM=tmux*` or `TERM_PROGRAM=tmux`), the ASCII graph is used.
+   - Whether tmux forwards the image escapes to the outer terminal cannot be detected, so the always-working ASCII graph is used instead.
+   - To use the image graph inside tmux, enable `set -g allow-passthrough on` in tmux.conf (version 3.2+) and specify `kitty-unicode` explicitly.
+2. Otherwise, the kitty graphics protocol is used if `KITTY_WINDOW_ID`, `GHOSTTY_RESOURCES_DIR`, or `TERM=xterm-ghostty` is set.
+3. Otherwise, the iTerm2 inline images protocol is used if `TERM_PROGRAM` is `iTerm.app`, `WezTerm`, `mintty`, or `vscode`, or if `LC_TERMINAL=iTerm2`.
+4. Otherwise, the ASCII graph is used.
+
+The ASCII graph follows the `--graph-style` and `--graph-width` options in the same way as the image graph.
 
 ## -o, --order \<TYPE\>
 

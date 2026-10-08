@@ -121,17 +121,20 @@ divider_fg = "dark-gray"
 
 ### `core.option.protocol`
 
-The protocol type for rendering images of commit graphs.
+The protocol used to render the commit graph.
 
 - type: `string` (enum)
 - default: `auto`
 - possible values:
-  - `auto`
-  - `iterm`
-  - `kitty`
-  - `kitty-unicode`
+  - `auto` — use the best mode for the current terminal. Uses an image protocol when the terminal is detected as supporting one (kitty, Ghostty, iTerm2, WezTerm, VSCode, mintty), and the ASCII graph otherwise. Inside tmux, the ASCII graph is used unless a protocol is specified explicitly.
+  - `iterm` — [iTerm2 inline images protocol](https://iterm2.com/documentation-images.html)
+  - `kitty` — [kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
+  - `kitty-unicode` — kitty graphics protocol with [Unicode placeholders](https://sw.kovidgoyal.net/kitty/graphics-protocol/#unicode-placeholders) (also works under tmux)
+  - `ascii` — Unicode box-drawing characters (`● │ ─ ╭ ╮ ╰ ╯`). Works in any terminal.
 
 The value specified in the command line argument takes precedence.
+
+See [Compatibility](../getting-started/compatibility.md) for the mode that each terminal uses.
 
 ### `core.option.order`
 
