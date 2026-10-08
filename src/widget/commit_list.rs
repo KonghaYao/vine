@@ -29,6 +29,9 @@ static FUZZY_MATCHER: Lazy<SkimMatcherV2> = Lazy::new(|| SkimMatcherV2::default(
 
 const ELLIPSIS: &str = "...";
 
+/// The marker rendered in front of the ref that HEAD points to, instead of the name of HEAD.
+const HEAD_MARKER: &str = "●";
+
 /// Number of rows scrolled by one wheel event.
 const WHEEL_SCROLL_STEP: usize = 3;
 
@@ -1264,7 +1267,9 @@ struct RefNameSpan<'a> {
 /// The spans of the refs of a commit.
 ///
 /// The name of each ref is rendered as a reversed badge, colored by the type of the ref, and the
-/// badges are separated by spaces.
+/// badges are separated by spaces. The badges are grouped by type: local branches, remote branches,
+/// and tags. The ref that HEAD points to is marked with a dot in front of it, instead of the name of
+/// HEAD.
 fn refs_spans<'a>(
     commit_info: &'a CommitInfo,
     head: &'a Head,
@@ -1285,7 +1290,7 @@ fn refs_spans<'a>(
         }
     }
 
-    let ref_spans: Vec<(Vec<Span>, &Ref, usize)> = refs
+    let mut ref_spans: Vec<(Vec<Span>, &Ref, usize)> = refs
         .iter()
         .filter_map(|r| match *r {
             Ref::Branch { name, .. } => {
@@ -1321,12 +1326,16 @@ fn refs_spans<'a>(
         })
         .collect();
 
+    // The badges are grouped by type: local branches first, then remote branches, and tags last.
+    // The sort is stable, so that the refs of a group keep the order they are loaded in.
+    ref_spans.sort_by_key(|(_, r, _)| ref_group(r));
+
     let mut spans: Vec<Span> = Vec::new();
     let mut names: Vec<RefNameSpan> = Vec::new();
 
     if let Head::Detached { target } = head {
         if commit_info.commit.commit_hash == *target {
-            spans.push(Span::raw("HEAD").fg(color_theme.list_head_fg).bold());
+            spans.push(head_marker(color_theme));
             // The separator is also pushed when there is no ref, so that the subject does not
             // stick to the marker
             spans.push(separator(color_theme));
@@ -1334,11 +1343,11 @@ fn refs_spans<'a>(
     }
 
     for (ref_spans, r, width) in ref_spans {
-        if let Head::Branch { name } = head {
-            // A tag can have the same name as the branch that HEAD points to
-            if matches!(r, Ref::Branch { .. }) && r.name() == name {
-                spans.push(Span::raw("HEAD -> ").fg(color_theme.list_head_fg).bold());
-            }
+        if head_points_to(head, r) {
+            // The marker is pushed right in front of the branch that HEAD points to, so that a tag
+            // with the same name cannot be mistaken for it
+            spans.push(head_marker(color_theme));
+            spans.push(separator(color_theme));
         }
         let offset: usize = spans.iter().map(Span::width).sum();
         spans.extend(ref_spans);
@@ -1347,6 +1356,32 @@ fn refs_spans<'a>(
     }
 
     RefsSpans { spans, names }
+}
+
+/// The order in which the types of refs are rendered: local branches first, then remote branches,
+/// and tags last.
+fn ref_group(r: &Ref) -> u8 {
+    match r {
+        Ref::Branch { .. } => 0,
+        Ref::RemoteBranch { .. } => 1,
+        Ref::Tag { .. } => 2,
+        Ref::Stash { .. } => 3,
+    }
+}
+
+/// Whether HEAD points to the given ref.
+///
+/// A tag can have the same name as the branch that HEAD points to, so only a local branch matches.
+fn head_points_to(head: &Head, r: &Ref) -> bool {
+    match head {
+        Head::Branch { name } => matches!(r, Ref::Branch { .. }) && r.name() == name,
+        Head::Detached { .. } | Head::None => false,
+    }
+}
+
+/// The marker rendered in front of the ref that HEAD points to.
+fn head_marker(color_theme: &ColorTheme) -> Span<'static> {
+    Span::raw(HEAD_MARKER).fg(color_theme.list_head_fg).bold()
 }
 
 /// The space that separates the refs of a commit.
@@ -3021,11 +3056,94 @@ mod tests {
         let spans = refs_spans(&info, &head, &matches, &theme);
 
         let text = text_of(&spans.spans);
-        assert_eq!(text, "HEAD -> main origin/main v1.0 ");
+        // HEAD is marked with a dot in front of the branch it points to, not with its name
+        assert_eq!(text, "● main origin/main v1.0 ");
         assert!(
             !text.contains([',', '(', ')', ';']),
             "the refs are separated by spaces, not by commas or brackets"
         );
+    }
+
+    #[test]
+    fn test_the_refs_are_grouped_by_type() {
+        let commit = commit(1);
+        // the refs are loaded in an arbitrary order
+        let refs = [
+            tag("v1.0"),
+            remote_branch("origin/main"),
+            branch("main"),
+            tag("v0.9"),
+            remote_branch("upstream/main"),
+            branch("develop"),
+        ];
+        let info = CommitInfo::new(&commit, refs.iter().collect(), Color::Reset);
+        let theme = ColorTheme::default();
+        let matches = FxHashMap::default();
+
+        let spans = refs_spans(&info, &Head::None, &matches, &theme);
+
+        // The local branches come first, then the remote branches, and the tags last. The refs of a
+        // group keep the order they are loaded in.
+        assert_eq!(
+            text_of(&spans.spans),
+            "main develop origin/main upstream/main v1.0 v0.9 "
+        );
+        assert_eq!(
+            spans
+                .names
+                .iter()
+                .map(|name| name.r.name())
+                .collect::<Vec<_>>(),
+            vec![
+                "main",
+                "develop",
+                "origin/main",
+                "upstream/main",
+                "v1.0",
+                "v0.9"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_the_refs_of_a_detached_head_are_grouped_by_type() {
+        let commit = commit(1);
+        let refs = [tag("v1.0"), remote_branch("origin/main"), branch("main")];
+        let info = CommitInfo::new(&commit, refs.iter().collect(), Color::Reset);
+        let head = Head::Detached {
+            target: commit.commit_hash.clone(),
+        };
+        let theme = ColorTheme::default();
+        let matches = FxHashMap::default();
+
+        let spans = refs_spans(&info, &head, &matches, &theme);
+
+        assert_eq!(text_of(&spans.spans), "● main origin/main v1.0 ");
+        assert_eq!(spans.names.len(), 3);
+    }
+
+    #[test]
+    fn test_a_single_stash_keeps_its_own_format() {
+        let commit = commit(1);
+        let refs = [Ref::Stash {
+            name: "stash@{0}".into(),
+            message: "WIP".into(),
+            target: CommitHash::default(),
+        }];
+        let info = CommitInfo::new(&commit, refs.iter().collect(), Color::Reset);
+        let head = Head::None;
+        let theme = ColorTheme::default();
+        let matches = FxHashMap::default();
+
+        let spans = refs_spans(&info, &head, &matches, &theme);
+
+        assert_eq!(text_of(&spans.spans), "stash@{0} ");
+        assert_eq!(spans.spans[0].style.fg, Some(theme.list_ref_stash_fg));
+        assert!(!spans.spans[0]
+            .style
+            .add_modifier
+            .contains(Modifier::REVERSED));
+        assert!(spans.names.is_empty(), "a stash cannot be switched to");
     }
 
     #[test]
@@ -3055,10 +3173,46 @@ mod tests {
                 ("v1.0".to_string(), theme.list_ref_tag_fg),
             ]
         );
+
+        // the marker of HEAD is not a badge
+        let marker = &spans.spans[0];
+        assert_eq!(marker.content.as_ref(), HEAD_MARKER);
+        assert_eq!(marker.style.fg, Some(theme.list_head_fg));
+        assert!(!marker.style.add_modifier.contains(Modifier::REVERSED));
     }
 
     #[test]
-    fn test_the_head_of_a_detached_commit_is_separated_from_the_refs_by_a_space() {
+    fn test_the_head_marker_is_a_single_cell() {
+        // The marker shifts the badges that follow it, so it must be exactly one cell wide
+        assert_eq!(Span::raw(HEAD_MARKER).width(), 1);
+    }
+
+    #[test]
+    fn test_the_head_marker_is_in_front_of_the_branch_that_head_points_to() {
+        let commit = commit(1);
+        let refs = [branch("develop"), branch("main"), tag("v1.0")];
+        let info = CommitInfo::new(&commit, refs.iter().collect(), Color::Reset);
+        let head = Head::Branch {
+            name: "main".into(),
+        };
+        let theme = ColorTheme::default();
+        let matches = FxHashMap::default();
+
+        let spans = refs_spans(&info, &head, &matches, &theme);
+
+        // the marker is not at the beginning of the refs: it follows the badge of another branch
+        assert_eq!(text_of(&spans.spans), "develop ● main v1.0 ");
+        assert_eq!(spans.names.len(), 3);
+        assert_eq!(spans.names[0].r.name(), "develop");
+        assert_eq!(spans.names[0].offset, 0);
+        // "develop " then the marker and its separator
+        assert_eq!(spans.names[1].r.name(), "main");
+        assert_eq!(spans.names[1].offset, "develop ".len() + 2);
+        assert_eq!(spans.names[2].r.name(), "v1.0");
+    }
+
+    #[test]
+    fn test_the_head_marker_of_a_detached_commit_is_separated_from_the_refs_by_a_space() {
         let commit = commit(1);
         let refs = [tag("v1.0")];
         let info = CommitInfo::new(&commit, refs.iter().collect(), Color::Reset);
@@ -3070,14 +3224,17 @@ mod tests {
 
         let spans = refs_spans(&info, &head, &matches, &theme);
 
-        assert_eq!(text_of(&spans.spans), "HEAD v1.0 ");
+        assert_eq!(text_of(&spans.spans), "● v1.0 ");
+        assert_eq!(spans.spans[0].content.as_ref(), HEAD_MARKER);
+        assert_eq!(spans.spans[0].style.fg, Some(theme.list_head_fg));
         assert_eq!(spans.names.len(), 1);
-        assert_eq!(spans.names[0].offset, "HEAD ".len());
+        // the marker and the space that separates it from the first badge
+        assert_eq!(spans.names[0].offset, 2);
         assert_eq!(spans.names[0].width, "v1.0".len());
     }
 
     #[test]
-    fn test_the_head_of_a_detached_commit_without_refs_is_followed_by_a_space() {
+    fn test_the_head_marker_of_a_detached_commit_without_refs_is_followed_by_a_space() {
         let commit = commit(1);
         let info = CommitInfo::new(&commit, vec![], Color::Reset);
         let head = Head::Detached {
@@ -3089,15 +3246,15 @@ mod tests {
         let spans = refs_spans(&info, &head, &matches, &theme);
 
         // The subject must not stick to the marker of a detached HEAD
-        assert_eq!(text_of(&spans.spans), "HEAD ");
+        assert_eq!(text_of(&spans.spans), "● ");
         assert!(spans.names.is_empty());
     }
 
     #[test]
-    fn test_only_the_branch_that_head_points_to_gets_the_head_prefix() {
+    fn test_only_the_branch_that_head_points_to_gets_the_head_marker() {
         let commit = commit(1);
         // a tag can have the same name as the branch that HEAD points to
-        let refs = [branch("main"), tag("main")];
+        let refs = [tag("main"), branch("main")];
         let info = CommitInfo::new(&commit, refs.iter().collect(), Color::Reset);
         let head = Head::Branch {
             name: "main".into(),
@@ -3107,8 +3264,26 @@ mod tests {
 
         let spans = refs_spans(&info, &head, &matches, &theme);
 
-        assert_eq!(text_of(&spans.spans), "HEAD -> main main ");
+        assert_eq!(text_of(&spans.spans), "● main main ");
         assert_eq!(spans.names.len(), 2, "both refs are badges");
+        assert!(
+            matches!(spans.names[0].r, Ref::Branch { .. }),
+            "the branch is rendered first, and the marker belongs to it"
+        );
+        assert_eq!(spans.names[0].offset, 2, "the marker and its separator");
+        assert!(matches!(spans.names[1].r, Ref::Tag { .. }));
+
+        // a remote branch is not the branch that HEAD points to, even with the same name
+        let refs = [remote_branch("main")];
+        let info = CommitInfo::new(&commit, refs.iter().collect(), Color::Reset);
+        let head = Head::Branch {
+            name: "main".into(),
+        };
+
+        let spans = refs_spans(&info, &head, &matches, &theme);
+
+        assert_eq!(text_of(&spans.spans), "main ");
+        assert_eq!(spans.names[0].offset, 0);
     }
 
     #[test]
@@ -3125,30 +3300,6 @@ mod tests {
 
         assert!(text_of(&spans.spans).is_empty());
         assert!(spans.names.is_empty());
-    }
-
-    #[test]
-    fn test_a_single_stash_keeps_its_own_format() {
-        let commit = commit(1);
-        let refs = [Ref::Stash {
-            name: "stash@{0}".into(),
-            message: "WIP".into(),
-            target: CommitHash::default(),
-        }];
-        let info = CommitInfo::new(&commit, refs.iter().collect(), Color::Reset);
-        let head = Head::None;
-        let theme = ColorTheme::default();
-        let matches = FxHashMap::default();
-
-        let spans = refs_spans(&info, &head, &matches, &theme);
-
-        assert_eq!(text_of(&spans.spans), "stash@{0} ");
-        assert_eq!(spans.spans[0].style.fg, Some(theme.list_ref_stash_fg));
-        assert!(!spans.spans[0]
-            .style
-            .add_modifier
-            .contains(Modifier::REVERSED));
-        assert!(spans.names.is_empty(), "a stash cannot be switched to");
     }
 
     #[test]
@@ -3175,6 +3326,34 @@ mod tests {
         assert_eq!(spans.names.len(), 1);
         assert_eq!(spans.names[0].offset, 0);
         assert_eq!(spans.names[0].width, "feature".len());
+    }
+
+    #[test]
+    fn test_the_head_marker_shifts_the_rectangles_of_the_badges() {
+        let commit = commit(1);
+        let refs = [branch("main"), remote_branch("origin/main")];
+        let info = CommitInfo::new(&commit, refs.iter().collect(), Color::Reset);
+        let head = Head::Branch {
+            name: "main".into(),
+        };
+        let theme = ColorTheme::default();
+        let matches = FxHashMap::default();
+
+        let spans = refs_spans(&info, &head, &matches, &theme);
+        assert_eq!(text_of(&spans.spans), "● main origin/main ");
+
+        let area = Rect::new(10, 3, 40, 1);
+        // the item starts with a space, then the marker and its separator
+        assert_eq!(
+            ref_badge_rect(area, 0, spans.names[0].offset, spans.names[0].width),
+            Rect::new(13, 3, 4, 1),
+            "the badge of the branch that HEAD points to follows the marker"
+        );
+        assert_eq!(
+            ref_badge_rect(area, 0, spans.names[1].offset, spans.names[1].width),
+            Rect::new(18, 3, 11, 1),
+            "the badges that follow the marker are shifted by it as well"
+        );
     }
 
     #[test]

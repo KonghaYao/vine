@@ -97,6 +97,8 @@ The commit list can also be operated with the mouse (enabled by default, see `ui
 - Wheel up/down: scroll the commit list by 3 rows
 - Drag the scrollbar thumb, or left click on the scrollbar track: scroll the commit list
 
+The refs of a commit are shown as reversed badges in front of its subject, with the local branches first, then the remote branches, and the tags last. The branch that HEAD points to is marked with a `●` right in front of its badge; when HEAD is detached, the `●` marks the commit itself.
+
 Scrolling with the wheel or the scrollbar does not change the selected commit, in the same way as <kbd>Ctrl-e</kbd>/<kbd>Ctrl-y</kbd>. Note that the selected commit can be scrolled out of the screen, in which case no row is highlighted.
 
 While the mouse is captured by the application, hold `Shift` to select and copy text with your terminal. Set `ui.common.mouse = false` to disable mouse operations and always use the terminal native mouse behavior.
