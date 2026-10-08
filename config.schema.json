@@ -301,7 +301,7 @@
               "description": "The width of the author name column.",
               "minimum": 0,
               "maximum": 65535,
-              "default": 20
+              "default": 12
             }
           },
           "additionalProperties": false

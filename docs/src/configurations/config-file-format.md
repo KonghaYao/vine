@@ -36,7 +36,7 @@ subject_min_width = 20
 date_format = "%Y-%m-%d"
 date_width = 10
 date_local = true
-name_width = 20
+name_width = 12
 
 [ui.detail]
 height = 20
@@ -352,9 +352,10 @@ Whether to show a author date in the commit list in local timezone.
 ### `ui.list.name_width`
 
 The width of a author name in the commit list.
+The author name is right-aligned in this width, and truncated when it is longer.
 
 - type: `u16`
-- default: `20`
+- default: `12`
 
 ### `ui.detail.height`
 

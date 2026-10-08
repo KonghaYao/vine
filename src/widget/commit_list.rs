@@ -1051,13 +1051,8 @@ impl CommitList<'_> {
         let items: Vec<ListItem> = self
             .rendering_commit_iter(state)
             .map(|(i, commit)| {
-                let truncate = console::measure_text_width(&commit.author_name) > max_width;
-                let name = if truncate {
-                    console::truncate_str(&commit.author_name, max_width, ELLIPSIS).to_string()
-                } else {
-                    commit.author_name.to_string()
-                };
-                let spans =
+                let (name, padding, truncate) = right_aligned_name(&commit.author_name, max_width);
+                let mut spans =
                     if let Some(pos) = state.search_matches[state.offset + i].author_name.clone() {
                         highlighted_spans(
                             name.into(),
@@ -1070,6 +1065,9 @@ impl CommitList<'_> {
                     } else {
                         vec![name.fg(self.ctx.color_theme.list_name_fg)]
                     };
+                if padding > 0 {
+                    spans.insert(0, Span::raw(" ".repeat(padding)));
+                }
                 self.to_commit_list_item(i, spans, state)
             })
             .collect();
@@ -1275,6 +1273,25 @@ fn highlighted_spans(
         hm = hm.ellipsis(ELLIPSIS);
     }
     hm.into_spans()
+}
+
+/// Right-aligns an author name inside a cell of `max_width` columns.
+///
+/// The name is truncated when it does not fit in the cell.
+/// Returns the possibly truncated name, the number of leading spaces that pushes
+/// it to the right edge of the cell, and whether the name was truncated.
+///
+/// The leading spaces are prepended after the search highlight is computed,
+/// because adding them to the highlighted text would shift the matched indices.
+fn right_aligned_name(name: &str, max_width: usize) -> (String, usize, bool) {
+    let truncate = console::measure_text_width(name) > max_width;
+    let name = if truncate {
+        console::truncate_str(name, max_width, ELLIPSIS).to_string()
+    } else {
+        name.to_string()
+    };
+    let padding = max_width.saturating_sub(console::measure_text_width(&name));
+    (name, padding, truncate)
 }
 
 fn calc_cell_widths(
@@ -2806,5 +2823,40 @@ mod tests {
             Constraint::Length(6),  // Graph
         ];
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_right_aligned_name_pads_a_short_name() {
+        let (name, padding, truncate) = right_aligned_name("author", 12);
+        assert_eq!(name, "author");
+        assert_eq!(padding, 6);
+        assert!(!truncate);
+        // The cell is filled even after right alignment
+        assert_eq!(padding + console::measure_text_width(&name), 12);
+    }
+
+    #[test]
+    fn test_right_aligned_name_does_not_pad_a_name_filling_the_cell() {
+        let (name, padding, truncate) = right_aligned_name("author_name!", 12);
+        assert_eq!(name, "author_name!");
+        assert_eq!(padding, 0);
+        assert!(!truncate);
+    }
+
+    #[test]
+    fn test_right_aligned_name_truncates_a_long_name_without_padding() {
+        let (name, padding, truncate) = right_aligned_name("a-very-long-author-name", 12);
+        assert_eq!(name, "a-very-lo...");
+        assert_eq!(padding, 0);
+        assert!(truncate);
+    }
+
+    #[test]
+    fn test_right_aligned_name_pads_by_display_width() {
+        // "山田" is 4 columns wide, but 6 bytes
+        let (name, padding, truncate) = right_aligned_name("山田", 12);
+        assert_eq!(name, "山田");
+        assert_eq!(padding, 8);
+        assert!(!truncate);
     }
 }

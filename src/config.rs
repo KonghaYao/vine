@@ -367,7 +367,7 @@ pub struct UiListConfig {
     #[default = true]
     pub date_local: bool,
     #[garde(range(min = 0))]
-    #[default = 20]
+    #[default = 12]
     pub name_width: u16,
 }
 
@@ -520,7 +520,7 @@ mod tests {
                     date_format: "%Y-%m-%d".into(),
                     date_width: 10,
                     date_local: true,
-                    name_width: 20,
+                    name_width: 12,
                 },
                 detail: UiDetailConfig {
                     height: 20,
@@ -782,7 +782,7 @@ mod tests {
                     date_format: "%Y/%m/%d".into(),
                     date_width: 10,
                     date_local: true,
-                    name_width: 20,
+                    name_width: 12,
                 },
                 detail: UiDetailConfig {
                     height: 20,
