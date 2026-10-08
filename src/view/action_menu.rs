@@ -1,7 +1,9 @@
 use std::rc::Rc;
 
 use ratatui::{
-    crossterm::event::{Event as CrosstermEvent, KeyCode, KeyEvent, MouseEvent},
+    crossterm::event::{
+        Event as CrosstermEvent, KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind,
+    },
     layout::Rect,
     Frame,
 };
@@ -14,7 +16,7 @@ use crate::{
     git_action::{needs_confirmation, ActionMenuEntry, GitAction, MenuAction},
     view::View,
     widget::{
-        action_menu::{ActionMenu, ActionMenuState},
+        action_menu::{ActionMenu, ActionMenuPlacement, ActionMenuState},
         confirm_dialog::{ConfirmDialog, ConfirmDialogState},
         ref_picker::{RefPicker, RefPickerState},
     },
@@ -74,6 +76,9 @@ pub struct ActionMenuView<'a> {
     menus: Vec<ActionMenuState>,
     popup: ActionPopup,
 
+    /// Whether the menu floats next to the more button it was opened from, or is centered.
+    placement: ActionMenuPlacement,
+
     /// All refs of the repository, used by the ref picker.
     refs: Vec<Ref>,
 
@@ -87,6 +92,7 @@ impl<'a> ActionMenuView<'a> {
         title: String,
         entries: Vec<ActionMenuEntry>,
         refs: Vec<Ref>,
+        placement: ActionMenuPlacement,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> ActionMenuView<'a> {
@@ -94,10 +100,16 @@ impl<'a> ActionMenuView<'a> {
             before,
             menus: vec![ActionMenuState::new(title, entries)],
             popup: ActionPopup::None,
+            placement,
             refs,
             ctx,
             tx,
         }
+    }
+
+    /// Whether the menu floats next to the cell it was anchored to, like a tooltip.
+    fn is_floating(&self) -> bool {
+        matches!(self.placement, ActionMenuPlacement::Anchor(_))
     }
 
     pub fn handle_event(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
@@ -116,15 +128,57 @@ impl<'a> ActionMenuView<'a> {
         }
     }
 
-    pub fn handle_mouse_event(&mut self, _mouse: MouseEvent) {
-        // The action menu is keyboard only
+    /// Handle the mouse, which drives the menu that was opened from the more button of a row.
+    ///
+    /// The centered menu keeps the keyboard only behaviour it always had. The tooltip menu selects
+    /// the entry under the cursor, executes the entry that is clicked, and closes when the click
+    /// lands outside the popup. A click is never passed to the view under the menu: the list, the
+    /// more button and the scrollbar of the list do not see the clicks while the menu is open.
+    pub fn handle_mouse_event(&mut self, mouse: MouseEvent) {
+        // The sub menus, the confirmation dialog and the ref picker are keyboard only
+        if !self.is_floating() || !matches!(self.popup, ActionPopup::None) {
+            return;
+        }
+        let Some(menu) = self.menus.last() else {
+            return;
+        };
+        let entry = menu.entry_at(mouse.column, mouse.row);
+        let outside = !menu.contains(mouse.column, mouse.row);
+        match mouse.kind {
+            MouseEventKind::Moved => {
+                // Hovering an entry highlights it, like the cursor of the keyboard
+                if let Some(index) = entry {
+                    self.select(index);
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(index) = entry {
+                    // A click executes the entry, like pressing enter on it
+                    self.select(index);
+                    self.select_entry();
+                } else if outside {
+                    self.tx.send(AppEvent::CloseActions);
+                }
+            }
+            MouseEventKind::Down(MouseButton::Right) if outside => {
+                self.tx.send(AppEvent::CloseActions);
+            }
+            _ => {}
+        }
+    }
+
+    /// Select the entry with the given index of the current menu.
+    fn select(&mut self, index: usize) {
+        if let Some(menu) = self.menus.last_mut() {
+            menu.select(index);
+        }
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
         self.before.render(f, area);
 
         if let Some(menu) = self.menus.last_mut() {
-            let action_menu = ActionMenu::new(self.ctx.clone());
+            let action_menu = ActionMenu::new(self.ctx.clone()).placement(self.placement);
             f.render_stateful_widget(action_menu, area, menu);
         }
 
@@ -440,5 +494,324 @@ mod tests {
                 "{event:?} {key:?}"
             );
         }
+    }
+
+    use crate::{
+        color::ColorTheme,
+        config::{ActionsConfig, CoreConfig, UiConfig},
+        event::{Receiver, Sender},
+        git::CommitHash,
+        keybind::KeyBind,
+        protocol::ImageProtocol,
+    };
+    use ratatui::{buffer::Buffer, layout::Position, widgets::StatefulWidget};
+
+    fn test_app_context() -> Rc<AppContext> {
+        Rc::new(AppContext {
+            keybind: KeyBind::default(),
+            core_config: CoreConfig::default(),
+            ui_config: UiConfig::default(),
+            actions_config: ActionsConfig::default(),
+            color_theme: ColorTheme::default(),
+            image_protocol: ImageProtocol::Iterm2,
+        })
+    }
+
+    /// An entry that runs the given action, without any submenu.
+    fn entry(label: &str, action: GitAction) -> ActionMenuEntry {
+        ActionMenuEntry::Action {
+            label: label.into(),
+            action: MenuAction::Action(action),
+        }
+    }
+
+    fn copy_hash_entry() -> ActionMenuEntry {
+        entry(
+            "Copy commit hash",
+            GitAction::CopyCommitHash {
+                commit_hash: CommitHash::default(),
+            },
+        )
+    }
+
+    fn detail_entry() -> ActionMenuEntry {
+        entry("Show commit details", GitAction::ShowCommitDetail)
+    }
+
+    /// The view of a menu floating next to the more button of a row near the right edge.
+    fn floating_view(entries: Vec<ActionMenuEntry>) -> (ActionMenuView<'static>, Receiver) {
+        let (tx, rx) = Sender::channel();
+        let view = ActionMenuView::new(
+            View::Default,
+            "Actions".into(),
+            entries,
+            Vec::new(),
+            ActionMenuPlacement::Anchor(Position::new(78, 2)),
+            test_app_context(),
+            tx,
+        );
+        (view, rx)
+    }
+
+    /// The view of a menu that is opened with the keyboard or a right click.
+    fn centered_view(entries: Vec<ActionMenuEntry>) -> (ActionMenuView<'static>, Receiver) {
+        let (tx, rx) = Sender::channel();
+        let view = ActionMenuView::new(
+            View::Default,
+            "Actions".into(),
+            entries,
+            Vec::new(),
+            ActionMenuPlacement::Center,
+            test_app_context(),
+            tx,
+        );
+        (view, rx)
+    }
+
+    /// Renders the menu, which records the popup and the entries on the screen.
+    fn render(view: &mut ActionMenuView<'static>, area: Rect) {
+        let mut buf = Buffer::empty(area);
+        let placement = view.placement;
+        let menu = view.menus.last_mut().unwrap();
+        let action_menu = ActionMenu::new(test_app_context()).placement(placement);
+        StatefulWidget::render(action_menu, area, &mut buf, menu);
+    }
+
+    fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+        }
+    }
+
+    fn area() -> Rect {
+        Rect::new(0, 0, 80, 24)
+    }
+
+    /// The position of the entry with the given index of the menu, found by scanning the area.
+    ///
+    /// Only the hit test of the menu is used, so that the tests click on exactly the cells the menu
+    /// considers to be part of the entry, whatever the popup was rendered in.
+    fn entry_position(view: &ActionMenuView<'static>, area: Rect, index: usize) -> Position {
+        scan(view, area, |menu, position| {
+            menu.entry_at(position.x, position.y) == Some(index)
+        })
+        .unwrap_or_else(|| panic!("the entry {index} is not rendered in {area:?}"))
+    }
+
+    /// A position of the area that is inside the popup but outside of its entries.
+    fn popup_position_without_entry(view: &ActionMenuView<'static>, area: Rect) -> Position {
+        scan(view, area, |menu, position| {
+            menu.contains(position.x, position.y) && menu.entry_at(position.x, position.y).is_none()
+        })
+        .expect("the popup has a border and a title")
+    }
+
+    /// A position of the area that is outside of the popup.
+    fn outside_position(view: &ActionMenuView<'static>, area: Rect) -> Position {
+        scan(view, area, |menu, position| {
+            !menu.contains(position.x, position.y)
+        })
+        .expect("the area is larger than the popup")
+    }
+
+    fn scan(
+        view: &ActionMenuView<'static>,
+        area: Rect,
+        predicate: impl Fn(&ActionMenuState, Position) -> bool,
+    ) -> Option<Position> {
+        let menu = view.menus.last().unwrap();
+        (area.top()..area.bottom())
+            .flat_map(|y| (area.left()..area.right()).map(move |x| Position::new(x, y)))
+            .find(|position| predicate(menu, *position))
+    }
+
+    #[test]
+    fn test_the_mouse_highlights_the_entry_under_the_cursor() {
+        let (mut view, _rx) = floating_view(vec![copy_hash_entry(), detail_entry()]);
+        render(&mut view, area());
+        let second = entry_position(&view, area(), 1);
+        view.handle_mouse_event(mouse(MouseEventKind::Moved, second.x, second.y));
+        assert_eq!(
+            view.menus[0].selected_entry().unwrap().label(),
+            "Show commit details"
+        );
+    }
+
+    #[test]
+    fn test_the_click_on_an_entry_runs_the_action_of_the_entry() {
+        let (mut view, rx) = floating_view(vec![copy_hash_entry(), detail_entry()]);
+        render(&mut view, area());
+        let second = entry_position(&view, area(), 1);
+        view.handle_mouse_event(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            second.x,
+            second.y,
+        ));
+        assert!(
+            matches!(rx.try_recv(), Some(AppEvent::CloseActions)),
+            "the menu is closed when the action runs"
+        );
+        assert!(
+            matches!(rx.try_recv(), Some(AppEvent::OpenDetail)),
+            "the clicked entry is the one that runs, like pressing enter on it"
+        );
+        assert!(rx.try_recv().is_none());
+    }
+
+    #[test]
+    fn test_the_click_on_an_entry_runs_the_action_at_the_flipped_position() {
+        let (mut view, rx) = floating_view(vec![copy_hash_entry(), detail_entry()]);
+        render(&mut view, area());
+        let second = entry_position(&view, area(), 1);
+        assert!(
+            second.x + 1 < 78,
+            "the popup is flipped to the left of the anchor: {second:?}"
+        );
+        view.handle_mouse_event(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            second.x,
+            second.y,
+        ));
+        assert!(matches!(rx.try_recv(), Some(AppEvent::CloseActions)));
+        assert!(matches!(rx.try_recv(), Some(AppEvent::OpenDetail)));
+    }
+
+    #[test]
+    fn test_the_click_outside_of_the_popup_closes_the_menu() {
+        let (mut view, rx) = floating_view(vec![copy_hash_entry(), detail_entry()]);
+        render(&mut view, area());
+        let outside = outside_position(&view, area());
+        view.handle_mouse_event(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            outside.x,
+            outside.y,
+        ));
+        assert!(matches!(rx.try_recv(), Some(AppEvent::CloseActions)));
+        assert!(
+            rx.try_recv().is_none(),
+            "a click on the list does not run an action"
+        );
+        assert!(
+            view.menus[0].selected_entry().is_some(),
+            "the menu is not changed, it is only closed"
+        );
+    }
+
+    #[test]
+    fn test_the_click_on_the_popup_but_not_on_an_entry_is_ignored() {
+        let (mut view, rx) = floating_view(vec![copy_hash_entry(), detail_entry()]);
+        render(&mut view, area());
+        // The title row of the popup is not one of its entries
+        let title = popup_position_without_entry(&view, area());
+        view.handle_mouse_event(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            title.x,
+            title.y,
+        ));
+        assert!(
+            rx.try_recv().is_none(),
+            "a click on the popup neither runs an action nor closes the menu"
+        );
+    }
+
+    #[test]
+    fn test_the_mouse_does_not_drive_the_centered_menu() {
+        let (mut view, rx) = centered_view(vec![copy_hash_entry(), detail_entry()]);
+        render(&mut view, area());
+        let first = entry_position(&view, area(), 0);
+        view.handle_mouse_event(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            first.x,
+            first.y,
+        ));
+        view.handle_mouse_event(mouse(MouseEventKind::Moved, first.x, first.y));
+        assert!(
+            rx.try_recv().is_none(),
+            "the centered menu is keyboard only, like it always was"
+        );
+        assert_eq!(
+            view.menus[0].selected_entry().unwrap().label(),
+            "Copy commit hash",
+            "the entry under the cursor is not selected"
+        );
+    }
+
+    #[test]
+    fn test_the_submenu_is_driven_by_the_mouse_like_the_first_menu() {
+        let (mut view, rx) = floating_view(vec![ActionMenuEntry::SubMenu {
+            label: "Branch".into(),
+            entries: vec![detail_entry()],
+        }]);
+        let confirm = UserEventWithCount::from_event(UserEvent::Confirm);
+        view.handle_event(confirm, KeyEvent::from(KeyCode::Enter));
+        assert_eq!(view.menus.len(), 2, "the submenu is open");
+        render(&mut view, area());
+        // The last menu is the submenu, so it is the one that is scanned
+        let entry = entry_position(&view, area(), 0);
+        view.handle_mouse_event(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            entry.x,
+            entry.y,
+        ));
+        assert!(
+            matches!(rx.try_recv(), Some(AppEvent::CloseActions)),
+            "the entry of the submenu runs when it is clicked"
+        );
+        assert!(matches!(rx.try_recv(), Some(AppEvent::OpenDetail)));
+    }
+
+    #[test]
+    fn test_the_click_on_an_entry_runs_it_after_the_window_is_resized() {
+        let (mut view, rx) = floating_view(vec![copy_hash_entry(), detail_entry()]);
+        render(&mut view, area());
+        // The window is resized, so the popup moves and the entries are rendered elsewhere
+        let small = Rect::new(0, 0, 40, 10);
+        render(&mut view, small);
+        let second = entry_position(&view, small, 1);
+        view.handle_mouse_event(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            second.x,
+            second.y,
+        ));
+        assert!(matches!(rx.try_recv(), Some(AppEvent::CloseActions)));
+        assert!(matches!(rx.try_recv(), Some(AppEvent::OpenDetail)));
+    }
+
+    #[test]
+    fn test_the_click_on_an_entry_runs_it_when_the_popup_is_flipped_up() {
+        let (mut view, rx) = floating_view(vec![copy_hash_entry(), detail_entry()]);
+        // The anchor is in the last row of a short area, so the popup is flipped above it
+        let area = Rect::new(0, 0, 80, 5);
+        render(&mut view, area);
+        let second = entry_position(&view, area, 1);
+        assert!(
+            second.y <= 2,
+            "the popup is not below the anchor at {second:?}"
+        );
+        view.handle_mouse_event(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            second.x,
+            second.y,
+        ));
+        assert!(matches!(rx.try_recv(), Some(AppEvent::CloseActions)));
+        assert!(matches!(rx.try_recv(), Some(AppEvent::OpenDetail)));
+    }
+
+    #[test]
+    fn test_the_confirmation_dialog_is_not_driven_by_the_mouse() {
+        let (mut view, rx) = floating_view(vec![copy_hash_entry()]);
+        view.popup = ActionPopup::Confirm {
+            action: GitAction::ShowCommitDetail,
+        };
+        view.handle_mouse_event(mouse(MouseEventKind::Moved, 10, 10));
+        view.handle_mouse_event(mouse(MouseEventKind::Down(MouseButton::Left), 10, 10));
+        assert!(
+            rx.try_recv().is_none(),
+            "the dialog is keyboard only, and a click does not run the action"
+        );
+        assert!(matches!(view.popup, ActionPopup::Confirm { .. }));
     }
 }

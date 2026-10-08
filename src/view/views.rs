@@ -16,9 +16,11 @@ use crate::{
         action_menu::ActionMenuView, detail::DetailView, help::HelpView, list::ListView,
         refs::RefsView, user_command::UserCommandView,
     },
-    widget::commit_list::{CommitListState, SearchRefreshContext, SearchState},
+    widget::{
+        action_menu::ActionMenuPlacement,
+        commit_list::{CommitListState, SearchRefreshContext, SearchState},
+    },
 };
-
 #[derive(Debug, Default)]
 pub enum View<'a> {
     #[default]
@@ -201,11 +203,12 @@ impl<'a> View<'a> {
         title: String,
         entries: Vec<ActionMenuEntry>,
         refs: Vec<Ref>,
+        placement: ActionMenuPlacement,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> Self {
         View::ActionMenu(Box::new(ActionMenuView::new(
-            before, title, entries, refs, ctx, tx,
+            before, title, entries, refs, placement, ctx, tx,
         )))
     }
 

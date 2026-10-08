@@ -34,7 +34,10 @@ use crate::{
     search::SearchOptions,
     view::{RefreshViewContext, View},
     watch::AutoRefreshBlockers,
-    widget::commit_list::{CommitInfo, CommitListState},
+    widget::{
+        action_menu::ActionMenuPlacement,
+        commit_list::{CommitInfo, CommitListState},
+    },
 };
 
 impl StatusLine {
@@ -491,10 +494,10 @@ impl App<'_> {
                         self.push_current_branch();
                         continue;
                     }
-                    // Only the commit list uses the movement of the mouse, for the hover of its
-                    // rows
+                    // Only the commit list and the action menu use the movement of the mouse,
+                    // for the hover of the rows of the list and of the entries of the menu
                     if matches!(mouse.kind, MouseEventKind::Moved)
-                        && !matches!(self.view, View::List(_))
+                        && !matches!(self.view, View::List(_) | View::ActionMenu(_))
                     {
                         continue;
                     }
@@ -530,7 +533,10 @@ impl App<'_> {
                     self.close_refs();
                 }
                 AppEvent::OpenActions => {
-                    self.open_actions();
+                    self.open_actions(None);
+                }
+                AppEvent::OpenActionsAt(anchor) => {
+                    self.open_actions(Some(anchor));
                 }
                 AppEvent::CloseActions => {
                     self.close_actions();
@@ -538,12 +544,12 @@ impl App<'_> {
                 AppEvent::MoreButtonHoverElapsed(token) => {
                     // The dwell is turned into the menu only while the commit list is shown and
                     // the arming is still the current one; the arming is expired otherwise
-                    let armed = match &mut self.view {
+                    let anchor = match &mut self.view {
                         View::List(view) => view.take_armed_more_button(token),
-                        _ => false,
+                        _ => None,
                     };
-                    if armed {
-                        self.open_actions();
+                    if let Some(anchor) = anchor {
+                        self.open_actions(Some(anchor));
                     }
                 }
                 AppEvent::ExecuteGitAction(action) => {
@@ -1030,7 +1036,7 @@ impl App<'_> {
         }
     }
 
-    fn open_actions(&mut self) {
+    fn open_actions(&mut self, anchor: Option<Rect>) {
         if !self.ctx.actions_config.enable || matches!(self.view, View::ActionMenu(_)) {
             return;
         }
@@ -1049,12 +1055,19 @@ impl App<'_> {
         if let View::List(view) = &mut self.view {
             view.clear_hover();
         }
+        // The menu opened from the more button floats next to it, so that it does not cover the
+        // list; the menu opened with the keyboard or a right click stays centered
+        let placement = match anchor {
+            Some(anchor) => ActionMenuPlacement::Anchor(anchor.as_position()),
+            None => ActionMenuPlacement::Center,
+        };
         let before = std::mem::take(&mut self.view);
         self.view = View::of_action_menu(
             before,
             action_menu_title(&name),
             entries,
             refs,
+            placement,
             self.ctx.clone(),
             self.ec.sender(),
         );
@@ -1178,6 +1191,7 @@ impl App<'_> {
             action_menu_title(branch),
             entries,
             refs,
+            ActionMenuPlacement::Center,
             self.ctx.clone(),
             self.ec.sender(),
         );

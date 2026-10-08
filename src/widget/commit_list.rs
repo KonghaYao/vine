@@ -76,6 +76,11 @@ const DOUBLE_CLICK_DELAY: Duration = Duration::from_millis(500);
 /// The symbol of the more button, which opens the action menu of the row it is on.
 const MORE_BUTTON: &str = "…";
 
+/// The number of columns the more button needs, which is reserved at the right edge of the list.
+///
+/// The symbol is drawn in a single cell, so the bar is one column wide.
+const MORE_BUTTON_WIDTH: u16 = 1;
+
 /// The style of the name of a ref: reversed, so that the badge is drawn in the color of the type of
 /// the ref on the background of the terminal.
 const BADGE_MODIFIER: Modifier = Modifier::BOLD.union(Modifier::REVERSED);
@@ -128,17 +133,18 @@ pub struct HoveredCommit {
 /// Splits the area of the columns of the list from the column of the more button bar.
 ///
 /// The more button bar is the rightmost column of `area`, and it is reserved only when it is
-/// enabled and the remaining columns still have room. The column of the bar is also returned, so
-/// that it can be recorded for the hit test of the mouse.
+/// enabled and the remaining columns still have room for a single cell, so that the button is
+/// always rendered whole and never overlaps the columns on its left. The column of the bar is also
+/// returned, so that it can be recorded for the hit test of the mouse.
 fn split_more_button_column(area: Rect, more_button: bool) -> (Rect, Option<u16>) {
-    if !more_button || area.width < 2 {
+    if !more_button || area.width <= MORE_BUTTON_WIDTH {
         return (area, None);
     }
     let columns_area = Rect {
-        width: area.width - 1,
+        width: area.width - MORE_BUTTON_WIDTH,
         ..area
     };
-    (columns_area, Some(area.right() - 1))
+    (columns_area, Some(area.right() - MORE_BUTTON_WIDTH))
 }
 
 #[derive(Debug)]
@@ -1088,7 +1094,9 @@ impl CommitList<'_> {
     /// Render the more button bar, which shows the more button of the row under the mouse.
     ///
     /// The cells of the bar are always drawn, so that the background of the selected row is not
-    /// interrupted at the right edge of the list.
+    /// interrupted at the right edge of the list. The bar is the last column of the area of the
+    /// list, which already excludes the scrollbar, so the button is never covered by the columns
+    /// on its left nor by the scrollbar on its right.
     fn render_more_buttons(
         &self,
         buf: &mut Buffer,
@@ -1096,7 +1104,9 @@ impl CommitList<'_> {
         column: u16,
         state: &CommitListState,
     ) {
-        if area.is_empty() {
+        // The bar is not rendered when it is outside of the buffer, which may happen when the
+        // layout is not up to date with the terminal
+        if area.is_empty() || column >= buf.area.right() {
             return;
         }
         let hovered_row = self
@@ -1105,6 +1115,10 @@ impl CommitList<'_> {
             .filter(|row| *row < state.height);
         for row in 0..area.height as usize {
             if state.offset + row >= state.total {
+                break;
+            }
+            let y = area.top() + row as u16;
+            if y >= buf.area.bottom() {
                 break;
             }
             let hovered = hovered_row == Some(row);
@@ -1120,7 +1134,7 @@ impl CommitList<'_> {
                 style = style.add_modifier(Modifier::REVERSED);
             }
             let symbol = if hovered { MORE_BUTTON } else { " " };
-            let cell = &mut buf[(column, area.top() + row as u16)];
+            let cell = &mut buf[(column, y)];
             cell.set_symbol(symbol).set_style(style);
         }
     }
@@ -3773,5 +3787,222 @@ mod tests {
                 assert!(!buf.content.iter().any(|cell| cell.symbol() == MORE_BUTTON));
             });
         }
+    }
+
+    /// Renders the commit list of a repository whose first commit carries the given refs, and whose
+    /// commits have long author names, on a test buffer.
+    ///
+    /// The badges and the author names compete with the other columns for the width of the row,
+    /// which is the case where the more button must stay whole.
+    fn with_rendered_commit_list_with_refs<R>(
+        subjects: &[&str],
+        refs: &[Ref],
+        width: u16,
+        height: u16,
+        hovered: Option<HoveredCommit>,
+        f: impl FnOnce(&Buffer, Option<u16>) -> R,
+    ) -> R {
+        let commits: Vec<Commit> = subjects
+            .iter()
+            .enumerate()
+            .map(|(i, subject)| Commit {
+                commit_hash: CommitHash::from(format!("{:040x}", i + 1).as_str()),
+                subject: (*subject).into(),
+                author_name: format!("A rather long author name {i}"),
+                ..Commit::default()
+            })
+            .collect();
+        let commit_hashes = commits.iter().map(|c| c.commit_hash.clone()).collect();
+        let commit_map = commits
+            .into_iter()
+            .map(|c| (c.commit_hash.clone(), c))
+            .collect();
+        let repository = Repository::new(
+            PathBuf::new(),
+            commit_map,
+            FxHashMap::default(),
+            FxHashMap::default(),
+            FxHashMap::default(),
+            Head::None,
+            commit_hashes,
+        );
+        let graph = calc_graph(&repository, None);
+        let graph_color_set = GraphColorSet::new(&GraphColorConfig::default());
+        let graph_image_manager = GraphImageManager::new(
+            &graph,
+            &graph_color_set,
+            CellWidthType::Double,
+            GraphStyle::Rounded,
+            GraphImageWidthMode::Compact,
+            ImageProtocol::Iterm2,
+        );
+        let commit_infos = graph
+            .commits
+            .iter()
+            .enumerate()
+            .map(|(i, commit)| {
+                if i == 0 {
+                    CommitInfo::new(commit, refs.iter().collect(), Color::Reset)
+                } else {
+                    CommitInfo::new(commit, repository.refs(&commit.commit_hash), Color::Reset)
+                }
+            })
+            .collect();
+        let mut state = CommitListState::new(
+            commit_infos,
+            graph_image_manager,
+            0,
+            repository.head(),
+            FxHashMap::default(),
+            SearchOptions::default(),
+            0,
+        );
+        state.reset_height(subjects.len());
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        state.ensure_visible_graph_uploaded();
+        let commit_list = CommitList::new(test_app_context())
+            .scrollbar(true)
+            .more_button(true)
+            .hovered(hovered);
+        commit_list.render(area, &mut buf, &mut state);
+        f(&buf, state.more_button_column())
+    }
+
+    #[test]
+    fn test_the_more_button_is_rendered_whole_on_every_row_and_width() {
+        let refs = [branch("main"), remote_branch("origin/main"), tag("v1.0.0")];
+        for width in 3..=120u16 {
+            for index in 0..4usize {
+                with_rendered_commit_list_with_refs(
+                    &["a very long subject that goes on and on", "b", "c", "d"],
+                    &refs,
+                    width,
+                    5,
+                    Some(HoveredCommit {
+                        index,
+                        armed: false,
+                    }),
+                    |buf, column| {
+                        let column = column.expect("the bar is reserved");
+                        assert_eq!(
+                            buf[(column, index as u16)].symbol(),
+                            MORE_BUTTON,
+                            "width {width}, row {index}"
+                        );
+                        assert_eq!(
+                            column,
+                            buf.area.width - 2,
+                            "width {width}: the bar is the last column of the content area"
+                        );
+                        assert!(
+                            column + 1 < buf.area.width,
+                            "width {width}: the scrollbar keeps its own column"
+                        );
+                    },
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_the_more_button_is_rendered_whole_on_the_first_and_the_last_row() {
+        let refs = [branch("main"), tag("v1.0.0")];
+        for index in [0usize, 3] {
+            with_rendered_commit_list_with_refs(
+                &["a rather long subject", "b", "c", "d"],
+                &refs,
+                40,
+                4,
+                Some(HoveredCommit { index, armed: true }),
+                |buf, column| {
+                    let column = column.expect("the bar is reserved");
+                    assert_eq!(buf[(column, index as u16)].symbol(), MORE_BUTTON);
+                    assert!(
+                        buf[(column, index as u16)]
+                            .style()
+                            .add_modifier
+                            .contains(Modifier::REVERSED),
+                        "row {index} is the armed button"
+                    );
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn test_the_more_button_is_rendered_on_the_row_of_the_hovered_commit_when_the_list_is_scrolled()
+    {
+        with_commit_list_state(&["a", "b", "c", "d", "e", "f"], |state| {
+            let area = Rect::new(0, 0, 60, 3);
+            let mut buf = Buffer::empty(area);
+            state.ensure_visible_graph_uploaded();
+            // The list is scrolled, so the first row of the viewport shows the third commit
+            state.offset = 2;
+            let commit_list = CommitList::new(test_app_context())
+                .scrollbar(true)
+                .more_button(true)
+                .hovered(Some(HoveredCommit {
+                    index: 2,
+                    armed: false,
+                }));
+            commit_list.render(area, &mut buf, state);
+            let column = state.more_button_column().expect("the bar is reserved");
+            assert_eq!(
+                buf[(column, 0)].symbol(),
+                MORE_BUTTON,
+                "the button is on the row of the hovered commit, not on its absolute row"
+            );
+            assert_eq!(buf[(column, 1)].symbol(), " ");
+        })
+    }
+
+    #[test]
+    fn test_the_more_button_bar_does_not_overlap_the_scrollbar() {
+        with_commit_list_state(&["a", "b", "c", "d", "e", "f"], |state| {
+            let area = Rect::new(0, 0, 60, 3);
+            let mut buf = Buffer::empty(area);
+            state.ensure_visible_graph_uploaded();
+            let commit_list = CommitList::new(test_app_context())
+                .scrollbar(true)
+                .more_button(true)
+                .hovered(Some(HoveredCommit {
+                    index: 1,
+                    armed: false,
+                }));
+            commit_list.render(area, &mut buf, state);
+            let column = state.more_button_column().expect("the bar is reserved");
+            let scrollbar = column + 1;
+            assert!(
+                matches!(buf[(scrollbar, 1)].symbol(), "│" | "█"),
+                "the scrollbar keeps its own column, which is the one after the bar"
+            );
+            assert_eq!(
+                buf[(column, 1)].symbol(),
+                MORE_BUTTON,
+                "the button is rendered next to the scrollbar, not under it"
+            );
+        })
+    }
+
+    #[test]
+    fn test_the_more_button_is_not_rendered_on_a_row_without_a_commit() {
+        with_rendered_commit_list(
+            &["a", "b", "c"],
+            60,
+            5,
+            true,
+            Some(HoveredCommit {
+                index: 2,
+                armed: true,
+            }),
+            |buf, column| {
+                let column = column.expect("the bar is reserved");
+                assert_eq!(buf[(column, 2)].symbol(), MORE_BUTTON);
+                for row in 3..5 {
+                    assert_eq!(buf[(column, row)].symbol(), " ", "row {row}");
+                }
+            },
+        );
     }
 }

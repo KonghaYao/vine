@@ -8,7 +8,10 @@ use std::{
     thread,
 };
 
-use ratatui::crossterm::event::{KeyEvent, MouseEvent, MouseEventKind};
+use ratatui::{
+    crossterm::event::{KeyEvent, MouseEvent, MouseEventKind},
+    layout::Rect,
+};
 use serde::{
     de::{self, Deserializer, Visitor},
     Deserialize,
@@ -34,6 +37,10 @@ pub enum AppEvent {
     OpenRefs,
     CloseRefs,
     OpenActions,
+    /// Opens the action menu of a commit list row, floating next to the given cell.
+    ///
+    /// The area is the rectangle of the more button the menu is anchored to.
+    OpenActionsAt(Rect),
     CloseActions,
     /// The mouse rested on the more button of a commit list row for long enough.
     ///
@@ -84,6 +91,13 @@ pub struct Sender {
 }
 
 impl Sender {
+    /// Creates a sender and the receiver of the events it sends, for the tests.
+    #[cfg(test)]
+    pub fn channel() -> (Self, Receiver) {
+        let (tx, rx) = mpsc::channel();
+        (Self { tx }, Receiver { rx })
+    }
+
     pub fn send(&self, event: AppEvent) {
         self.tx.send(event).unwrap();
     }
@@ -109,6 +123,12 @@ pub struct Receiver {
 impl Receiver {
     fn recv(&self) -> AppEvent {
         self.rx.recv().unwrap()
+    }
+
+    /// Receives the next event without blocking, for the tests.
+    #[cfg(test)]
+    pub fn try_recv(&self) -> Option<AppEvent> {
+        self.rx.try_recv().ok()
     }
 }
 
