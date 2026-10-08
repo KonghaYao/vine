@@ -27,6 +27,9 @@ By default `auto` picks the best supported mode for the current terminal:
 3. Otherwise, the iTerm2 inline images protocol is used if `TERM_PROGRAM` is `iTerm.app`, `WezTerm`, `mintty`, or `vscode`, or if `LC_TERMINAL=iTerm2`.
 4. Otherwise, the ASCII graph is used.
 
+The mode can also be forced with the `$SERIE_PROTOCOL` environment variable, e.g. `SERIE_PROTOCOL=ascii`, which is useful when the automatic detection does not fit the environment (ssh sessions, unknown terminal emulators, ...).
+This option takes precedence over it, and it takes precedence over the `protocol` config option.
+
 The ASCII graph follows the `--graph-style` and `--graph-width` options in the same way as the image graph.
 
 ## -o, --order \<TYPE\>

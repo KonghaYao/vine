@@ -44,9 +44,18 @@ Any terminal emulator that can display Unicode box-drawing characters can render
 
 It is selected automatically when `auto` cannot identify a terminal that supports an image protocol, and it can also be selected explicitly with `--protocol ascii`.
 
+### Forcing a mode
+
+When `auto` picks an image protocol that the environment cannot actually display, the mode can be forced, in order of priority:
+
+1. The `--protocol` command line option.
+2. The `$SERIE_PROTOCOL` environment variable, e.g. `SERIE_PROTOCOL=ascii`.
+   - This is useful for forcing the mode per environment (a shell on a remote host, a specific terminal, ...) without editing the config file.
+3. The `protocol` config option.
+
 ### How `auto` picks a mode
 
-1. Explicitly specifying `--protocol` or the `protocol` config option always takes precedence.
+1. Explicitly specifying `--protocol`, `$SERIE_PROTOCOL`, or the `protocol` config option always takes precedence (see [Forcing a mode](#forcing-a-mode)).
 2. Inside tmux, the ASCII graph is used.
    - Image protocols have to be forwarded by tmux with `allow-passthrough`, and whether it is enabled cannot be detected (see [Partially supported environments](#partially-supported-environments)).
 3. Otherwise, the kitty graphics protocol is used in terminals that are detected as supporting it (kitty, Ghostty).

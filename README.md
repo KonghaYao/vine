@@ -163,6 +163,9 @@ These rendering modes are supported:
 - ASCII graph (Unicode box-drawing characters, works in any terminal)
   - Used as the fallback when `auto` cannot identify a terminal that supports an image protocol, or selected explicitly with `--protocol ascii`.
 
+The mode can also be forced with the `$SERIE_PROTOCOL` environment variable (e.g. `SERIE_PROTOCOL=ascii`), which is useful when the automatic detection does not fit the environment (ssh sessions, unknown terminal emulators, ...).
+The `--protocol` option takes precedence over it, and it takes precedence over the `protocol` config option.
+
 For more information, see [Compatibility](https://lusingander.github.io/serie/getting-started/compatibility.html).
 
 ### Partially supported environments
