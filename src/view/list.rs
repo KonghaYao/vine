@@ -317,8 +317,10 @@ impl<'a> ListView<'a> {
                 }
                 self.tx.send(AppEvent::OpenActions);
             }
-            MouseEventKind::ScrollDown => self.as_mut_list_state().scroll_wheel_down(),
-            MouseEventKind::ScrollUp => self.as_mut_list_state().scroll_wheel_up(),
+            // One wheel event scrolls one row: the scrolling of the wheel is not amplified, and
+            // is applied immediately, as the keyboard scrolling is
+            MouseEventKind::ScrollDown => self.as_mut_list_state().scroll_down(),
+            MouseEventKind::ScrollUp => self.as_mut_list_state().scroll_up(),
             _ => {}
         }
     }

@@ -32,9 +32,6 @@ const ELLIPSIS: &str = "...";
 /// The marker rendered in front of the ref that HEAD points to, instead of the name of HEAD.
 const HEAD_MARKER: &str = "●";
 
-/// Number of rows scrolled by one wheel event.
-const WHEEL_SCROLL_STEP: usize = 3;
-
 /// Geometry of the scrollbar rendered on the right edge of the commit list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScrollbarGeometry {
@@ -440,15 +437,16 @@ impl<'a> CommitListState<'a> {
     /// Scroll the viewport down by one row.
     ///
     /// This is a pure scroll: it does not change the selected commit, which is allowed to go
-    /// out of the viewport.
+    /// out of the viewport. A wheel event scrolls exactly one row: the scrolling of the wheel is
+    /// not amplified, so that the viewport moves only as far as the events it receives.
     pub fn scroll_down(&mut self) {
-        self.set_offset(self.offset + 1);
+        self.set_offset(self.offset.saturating_add(1));
     }
 
     /// Scroll the viewport up by one row.
     ///
     /// This is a pure scroll: it does not change the selected commit, which is allowed to go
-    /// out of the viewport.
+    /// out of the viewport. A wheel event scrolls exactly one row, as in [`Self::scroll_down`].
     pub fn scroll_up(&mut self) {
         self.set_offset(self.offset.saturating_sub(1));
     }
@@ -480,16 +478,27 @@ impl<'a> CommitListState<'a> {
         if self.height == 0 || self.total == 0 {
             return;
         }
+        let index = self
+            .selected
+            .saturating_add(scroll_height)
+            .min(self.total - 1);
         if self.offset + self.height + scroll_height < self.total {
+            // The selection follows the viewport only when it is on the screen, so that a
+            // selection that the wheel or the scrollbar scrolled out of the viewport is not
+            // brought back into it, which would jump the viewport backwards.
+            let selection_is_visible = self.selected_row().is_some();
             self.offset += scroll_height;
-            let index = self.selected + scroll_height;
-            self.select_visible_index(index);
+            if selection_is_visible {
+                self.select_visible_index(index);
+            } else {
+                self.selected = index;
+            }
         } else {
             let size = self.height.min(self.total);
             self.offset = self.total - size;
             // Move the selection by the number of rows actually scrolled, but never past the
             // last commit, so that further page scrolls reach the last commit.
-            self.selected = (self.selected + scroll_height).min(self.total - 1);
+            self.selected = index;
         }
     }
 
@@ -497,13 +506,12 @@ impl<'a> CommitListState<'a> {
         if self.height == 0 || self.total == 0 {
             return;
         }
-        if self.offset > scroll_height {
-            self.offset -= scroll_height;
-        } else {
-            self.offset = 0;
-        }
+        // As in `scroll_down_height`, a selection that is out of the viewport moves with the
+        // viewport instead of being brought back into it.
+        let selection_is_visible = self.selected_row().is_some();
+        self.offset = self.offset.saturating_sub(scroll_height);
         let index = self.selected.saturating_sub(scroll_height);
-        if self.offset > 0 {
+        if self.offset > 0 && selection_is_visible {
             self.select_visible_index(index);
         } else {
             self.selected = index;
@@ -677,16 +685,6 @@ impl<'a> CommitListState<'a> {
             return None;
         }
         Some(div_round(self.height * self.height, self.total).clamp(1, self.height))
-    }
-
-    /// Scroll the viewport down by one wheel step, without changing the selected commit.
-    pub fn scroll_wheel_down(&mut self) {
-        self.set_offset(self.offset.saturating_add(WHEEL_SCROLL_STEP));
-    }
-
-    /// Scroll the viewport up by one wheel step, without changing the selected commit.
-    pub fn scroll_wheel_up(&mut self) {
-        self.set_offset(self.offset.saturating_sub(WHEEL_SCROLL_STEP));
     }
 
     /// Select the commit at the given absolute index, without scrolling the viewport.
@@ -2347,33 +2345,227 @@ mod tests {
             state.select_index(7);
             assert_eq!(state.current_list_status(), (7, 7, 5));
 
-            // one wheel event scrolls three rows
-            state.scroll_wheel_down();
+            // one wheel event scrolls exactly one row
+            state.scroll_down();
+            assert_eq!(state.current_list_status(), (7, 8, 5));
+            state.scroll_down();
+            assert_eq!(state.current_list_status(), (7, 9, 5));
+
+            // the selection is left behind by the scroll, without being changed
+            state.scroll_down();
             assert_eq!(state.current_list_status(), (7, 10, 5));
             assert_eq!(state.selected_row(), None);
-            state.scroll_wheel_down();
-            assert_eq!(state.current_list_status(), (7, 13, 5));
 
             // clamped to the end of the list
-            state.scroll_wheel_down();
-            assert_eq!(state.current_list_status(), (7, 15, 5));
-            state.scroll_wheel_down();
-            assert_eq!(state.current_list_status(), (7, 15, 5));
+            for _ in 0..20 {
+                state.scroll_down();
+            }
+            assert_eq!(
+                state.current_list_status(),
+                (7, 15, 5),
+                "scrolling down at the end of the list does not move the viewport"
+            );
 
             // and to the top of the list
-            state.scroll_wheel_up();
-            assert_eq!(state.current_list_status(), (7, 12, 5));
-            for _ in 0..10 {
-                state.scroll_wheel_up();
+            state.scroll_up();
+            assert_eq!(state.current_list_status(), (7, 14, 5));
+            for _ in 0..20 {
+                state.scroll_up();
             }
-            assert_eq!(state.current_list_status(), (7, 0, 5));
+            assert_eq!(
+                state.current_list_status(),
+                (7, 0, 5),
+                "scrolling up at the top of the list does not move the viewport"
+            );
             assert_eq!(state.selected_row(), None);
 
             // scrolling back brings the same commit into view
-            state.scroll_wheel_down();
-            assert_eq!(state.current_list_status(), (7, 3, 5));
+            for _ in 0..7 {
+                state.scroll_down();
+            }
+            assert_eq!(state.current_list_status(), (7, 7, 5));
+            assert_eq!(state.selected_row(), Some(0));
+        });
+    }
+
+    #[test]
+    fn test_the_viewport_does_not_move_when_there_is_nothing_to_scroll() {
+        // The whole list is visible, so the maximum offset is zero
+        with_commit_list_state(&["commit"; 3], |state| {
+            state.reset_height(5);
+            for _ in 0..5 {
+                state.scroll_down();
+                state.scroll_down_page();
+                state.scroll_down_half();
+                state.scroll_up();
+                state.scroll_up_page();
+                state.scroll_up_half();
+                state.select_next();
+                assert_eq!(state.current_list_status().1, 0, "the offset stays at zero");
+            }
+        });
+
+        // The list is exactly as long as the viewport
+        with_commit_list_state(&["commit"; 5], |state| {
+            state.reset_height(5);
+            state.scroll_down();
+            state.scroll_down_page();
+            assert_eq!(state.current_list_status().1, 0, "the offset stays at zero");
+        });
+
+        // There is no commit
+        with_commit_list_state(&[], |state| {
+            state.reset_height(5);
+            state.scroll_down();
+            state.scroll_down_page();
+            state.scroll_down_half();
+            state.scroll_up();
+            state.scroll_up_page();
+            state.select_last();
+            state.select_next();
+            assert_eq!(state.current_list_status(), (0, 0, 5));
+        });
+    }
+
+    #[test]
+    fn test_a_page_scroll_that_is_larger_than_the_remaining_distance_stops_at_the_end() {
+        with_commit_list_state(&["commit"; 20], |state| {
+            state.reset_height(5);
+            assert_eq!(state.current_list_status(), (0, 0, 5));
+
+            // only two rows are left below the viewport, but a page is five rows
+            state.set_offset(13);
+            state.scroll_down_page();
+            assert_eq!(
+                state.current_list_status(),
+                (5, 15, 5),
+                "the offset stops exactly at the last one"
+            );
+
+            // the offset does not grow past the end, even though the selection still moves
+            state.scroll_down_page();
+            assert_eq!(state.current_list_status(), (10, 15, 5));
+            state.scroll_down_page();
+            assert_eq!(state.current_list_status(), (15, 15, 5));
+        });
+    }
+
+    #[test]
+    fn test_page_scroll_moves_the_selection_with_the_viewport() {
+        with_commit_list_state(&["commit"; 20], |state| {
+            state.reset_height(5);
+            state.select_index(7);
+            assert_eq!(state.current_list_status(), (7, 7, 5));
+
+            // the selection keeps its row in the viewport
+            state.scroll_down_page();
+            assert_eq!(state.current_list_status(), (12, 12, 5));
+            assert_eq!(state.selected_row(), Some(0));
+            state.scroll_up_page();
+            assert_eq!(state.current_list_status(), (7, 7, 5));
+            assert_eq!(state.selected_row(), Some(0));
+
+            // further page scrolls reach the last commit
+            state.select_last();
+            assert_eq!(state.current_list_status(), (19, 15, 5));
+            state.scroll_up_page();
+            assert_eq!(state.current_list_status(), (14, 10, 5));
             assert_eq!(state.selected_row(), Some(4));
         });
+    }
+
+    #[test]
+    fn test_page_down_does_not_jump_the_viewport_back_to_the_selection() {
+        with_commit_list_state(&["commit"; 40], |state| {
+            state.reset_height(5);
+
+            // The wheel scrolls the viewport without moving the selection, which leaves the
+            // selected commit above the viewport
+            for _ in 0..20 {
+                state.scroll_down();
+            }
+            assert_eq!(state.current_list_status(), (0, 20, 5));
+            assert_eq!(state.selected_row(), None);
+
+            // A page down moves the viewport and the selection by a page: it does not scroll the
+            // viewport back up to the selected commit
+            state.scroll_down_page();
+            assert_eq!(state.current_list_status(), (5, 25, 5));
+            assert_eq!(state.selected_row(), None);
+        });
+    }
+
+    #[test]
+    fn test_page_up_does_not_jump_the_viewport_forward_to_the_selection() {
+        with_commit_list_state(&["commit"; 40], |state| {
+            state.reset_height(5);
+            state.select_index(35);
+            assert_eq!(state.current_list_status(), (35, 35, 5));
+
+            // The scrollbar scrolls the viewport without moving the selection, which leaves the
+            // selected commit below the viewport
+            for _ in 0..25 {
+                state.scroll_up();
+            }
+            assert_eq!(state.current_list_status(), (35, 10, 5));
+            assert_eq!(state.selected_row(), None);
+
+            // A page up moves the viewport and the selection by a page: it does not scroll the
+            // viewport down to the selected commit
+            state.scroll_up_page();
+            assert_eq!(state.current_list_status(), (30, 5, 5));
+            assert_eq!(state.selected_row(), None);
+        });
+    }
+
+    /// Every offset changing operation stays within `[0, total - height]`, and the scrollbar
+    /// stays on its track, for lists and viewports of any size.
+    #[test]
+    fn test_scrolling_never_leaves_the_valid_offset_range() {
+        for total in 0..=7usize {
+            for height in 0..=7usize {
+                let subjects = vec!["commit"; total];
+                with_commit_list_state(&subjects, |state| {
+                    state.reset_height(height);
+                    let max_offset = total.saturating_sub(height);
+                    let operations: [fn(&mut CommitListState); 14] = [
+                        |s| s.scroll_down(),
+                        |s| s.scroll_up(),
+                        |s| s.scroll_down_page(),
+                        |s| s.scroll_up_page(),
+                        |s| s.scroll_down_half(),
+                        |s| s.scroll_up_half(),
+                        |s| s.select_next(),
+                        |s| s.select_prev(),
+                        |s| s.select_first(),
+                        |s| s.select_last(),
+                        |s| s.select_high(),
+                        |s| s.select_middle(),
+                        |s| s.select_low(),
+                        |s| s.set_offset(s.offset_for_thumb_start(u16::MAX)),
+                    ];
+                    for round in 0..3 {
+                        for (i, operation) in operations.iter().enumerate() {
+                            operation(state);
+                            let (_, offset, _) = state.current_list_status();
+                            assert!(
+                                offset <= max_offset,
+                                "total={total} height={height} round={round} operation={i}: \
+                                 offset={offset} > max={max_offset}"
+                            );
+                            if let Some(geometry) = state.scrollbar_geometry() {
+                                let track_end = geometry.thumb_start + geometry.thumb_len;
+                                assert!(
+                                    track_end <= height as u16,
+                                    "total={total} height={height} round={round} operation={i}: \
+                                     the thumb ends at {track_end}, past the track of {height}"
+                                );
+                            }
+                        }
+                    }
+                });
+            }
+        }
     }
 
     #[test]
