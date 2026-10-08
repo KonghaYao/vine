@@ -481,6 +481,49 @@ fn split_remote_branch(remote_branch: &str) -> Option<(&str, &str)> {
     (!branch.is_empty()).then_some((remote, branch))
 }
 
+/// The refs attached to the commit that can be merged into the current branch.
+///
+/// Only branches are merged this way: a tag or a stash is not a branch. The current branch is not
+/// a candidate either, since merging it into itself does nothing.
+fn mergeable_branch_refs<'a>(refs: &'a [Ref], ctx: &ActionMenuContext) -> Vec<&'a Ref> {
+    refs.iter()
+        .filter(|r| match r {
+            Ref::Branch { name, .. } => !ctx.is_current_branch(name),
+            Ref::RemoteBranch { .. } => true,
+            Ref::Tag { .. } | Ref::Stash { .. } => false,
+        })
+        .collect()
+}
+
+/// The entries that merge the branch of the commit into the current branch.
+///
+/// The branch of the commit is merged directly, without going through the ref picker of
+/// "Merge branch...": a single candidate becomes one entry that merges it, and several candidates
+/// become a submenu that lists them.
+fn merge_branch_menu_entries(refs: &[Ref], ctx: &ActionMenuContext) -> Vec<ActionMenuEntry> {
+    let merge_entry = |r: &&Ref| {
+        action_entry(
+            r.name(),
+            MenuAction::Action(GitAction::MergeBranch {
+                name: r.name().into(),
+            }),
+        )
+    };
+    match mergeable_branch_refs(refs, ctx).as_slice() {
+        [] => Vec::new(),
+        [r] => vec![action_entry(
+            "Merge into current branch",
+            MenuAction::Action(GitAction::MergeBranch {
+                name: r.name().into(),
+            }),
+        )],
+        branches => vec![ActionMenuEntry::SubMenu {
+            label: "Merge into current branch".into(),
+            entries: branches.iter().map(merge_entry).collect(),
+        }],
+    }
+}
+
 /// Builds the action menu for the given commit.
 ///
 /// The submenu of each ref attached to the commit is built by [`ref_menu_entries`].
@@ -538,6 +581,7 @@ pub fn commit_menu_entries(
             label: "Reset".into(),
             entries: reset_menu_entries(commit_hash),
         });
+        entries.extend(merge_branch_menu_entries(refs, ctx));
         entries.push(action_entry("Merge branch...", MenuAction::MergeRef));
         entries.push(action_entry("Rebase onto...", MenuAction::RebaseRef));
     }
@@ -1423,6 +1467,7 @@ mod tests {
                 "Cherry-pick",
                 "Revert",
                 "Reset",
+                "Merge into current branch",
                 "Merge branch...",
                 "Rebase onto...",
                 "Run user command 1: git diff",
@@ -1589,6 +1634,107 @@ mod tests {
             &menu_context(true, &[]),
         );
         assert_eq!(labels(&entries).len(), 11);
+    }
+
+    #[test]
+    fn test_commit_menu_entries_merges_the_branch_of_the_commit_into_the_current_branch() {
+        let hash = commit_hash(1);
+        let branch = Ref::Branch {
+            name: "feature/x".into(),
+            target: hash,
+        };
+        let entries = commit_menu_entries(
+            &commit_hash(1),
+            &[branch],
+            &user_commands(&[]),
+            &menu_context_with_current_branch(&[], "main"),
+        );
+
+        // A single branch is merged by one entry, without going through the ref picker
+        assert_eq!(
+            find_entry(&entries, "Merge into current branch"),
+            &ActionMenuEntry::Action {
+                label: "Merge into current branch".into(),
+                action: MenuAction::Action(GitAction::MergeBranch {
+                    name: "feature/x".into(),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn test_commit_menu_entries_lists_the_branches_of_the_commit_when_several_can_be_merged() {
+        let hash = commit_hash(1);
+        let local = Ref::Branch {
+            name: "feature/x".into(),
+            target: hash.clone(),
+        };
+        let other = Ref::Branch {
+            name: "feature/y".into(),
+            target: hash.clone(),
+        };
+        let remote = Ref::RemoteBranch {
+            name: "origin/feature/z".into(),
+            target: hash.clone(),
+        };
+        let tag = Ref::Tag {
+            name: "v1.0".into(),
+            target: hash,
+        };
+        let entries = commit_menu_entries(
+            &commit_hash(1),
+            &[local, other, remote, tag],
+            &user_commands(&[]),
+            &menu_context_with_current_branch(&[], "main"),
+        );
+
+        // Several branches are listed in a submenu: the tags are not merged with them
+        let ActionMenuEntry::SubMenu {
+            label,
+            entries: branch_entries,
+        } = find_entry(&entries, "Merge into current branch")
+        else {
+            panic!("the merge of several branches should be a submenu");
+        };
+        assert_eq!(label, "Merge into current branch");
+        assert_eq!(
+            labels(branch_entries),
+            vec!["feature/x", "feature/y", "origin/feature/z"]
+        );
+        assert_eq!(
+            find_entry(branch_entries, "origin/feature/z"),
+            &ActionMenuEntry::Action {
+                label: "origin/feature/z".into(),
+                action: MenuAction::Action(GitAction::MergeBranch {
+                    name: "origin/feature/z".into(),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn test_commit_menu_entries_does_not_merge_the_current_branch_into_itself() {
+        let hash = commit_hash(1);
+        let current = Ref::Branch {
+            name: "main".into(),
+            target: hash.clone(),
+        };
+        let tag = Ref::Tag {
+            name: "v1.0".into(),
+            target: hash,
+        };
+        let entries = commit_menu_entries(
+            &commit_hash(1),
+            &[current, tag],
+            &user_commands(&[]),
+            &menu_context_with_current_branch(&[], "main"),
+        );
+
+        // The current branch is the target of the merge, so it is not offered as its source, and
+        // a tag is not a branch: there is nothing left to merge
+        assert!(labels(&entries)
+            .iter()
+            .all(|label| label != "Merge into current branch"));
     }
 
     #[test]

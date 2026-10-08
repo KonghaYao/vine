@@ -127,8 +127,12 @@ The action menu is opened with <kbd>x</kbd> (or a right click on the commit list
 actions available for the selected commit or ref:
 
 - Commit: Copy commit hash, Show commit details, Checkout (detached), Create branch..., Create tag...,
-  Cherry-pick, Revert, Reset (soft/mixed/hard), Merge another branch, Rebase onto another branch,
-  Run user command, and the actions of the refs attached to the commit (as a submenu).
+  Cherry-pick, Revert, Reset (soft/mixed/hard), Merge into current branch, Merge another branch,
+  Rebase onto another branch, Run user command, and the actions of the refs attached to the commit
+  (as a submenu).
+  - Merge into current branch merges the branch of the commit (the local branches first, then the
+    remote branches) into the branch that is checked out. The branch that is checked out itself is
+    not listed, since merging it into itself does nothing, and neither are the tags.
 - Branch: Checkout / Switch, Merge into current branch, Rebase current onto this branch, Rename...,
   Delete, Delete (force), and the remote actions below.
 - Remote branch: Merge into current branch, Rebase current onto this branch.
