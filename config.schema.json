@@ -263,7 +263,7 @@
             },
             "columns": {
               "type": "array",
-              "description": "The order and visibility of columns in the commit list.",
+              "description": "The order and visibility of columns in the commit list. This list is the authority on which columns the commit list has and on their order: a column type that is not listed here is never rendered. The ui.commit_list switches hide and show the optional columns that are listed here, so the two settings can never disagree.",
               "minItems": 1,
               "items": {
                 "$ref": "#/definitions/userListColumnType"
@@ -318,17 +318,17 @@
           "properties": {
             "show_date": {
               "type": "boolean",
-              "description": "Whether to show the author date column of the commit list. The column is hidden when the value is false, and it is also removed from ui.list.columns if it is listed there.",
+              "description": "Whether to show the author date column of the commit list. The column is only rendered when `date` is also listed in ui.list.columns: the value hides a column of the list, it never adds one, and the column is not rendered when either of the two settings says so. A column that is not listed has no switch in the action menu.",
               "default": true
             },
             "show_hash": {
               "type": "boolean",
-              "description": "Whether to show the commit hash column of the commit list. The column is hidden when the value is false, and it is also removed from ui.list.columns if it is listed there.",
+              "description": "Whether to show the commit hash column of the commit list. The column is only rendered when `hash` is also listed in ui.list.columns, like show_date.",
               "default": true
             },
             "show_author": {
               "type": "boolean",
-              "description": "Whether to show the author name column of the commit list. The column is hidden when the value is false, and it is also removed from ui.list.columns if it is listed there.",
+              "description": "Whether to show the author name column of the commit list. The column is only rendered when `name` is also listed in ui.list.columns, like show_date.",
               "default": true
             }
           },

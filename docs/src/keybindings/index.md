@@ -141,12 +141,17 @@ actions available for the selected commit or ref:
 
 ##### Column switches
 
-The menu of a commit ends with a horizontal line followed by three switches that show or hide the
-columns of the commit list:
+The menu of a commit ends with a horizontal line followed by the switches that show or hide the
+optional columns of the commit list:
 
 - `Date` — the author date of the commits.
 - `Hash` — the short hash of the commits.
 - `Author` — the name of the author of the commits.
+
+All three are listed with the default columns. A switch is listed only when its column is in
+`ui.list.columns`, which decides which columns the list has and in which order: a column that is
+not listed there is never rendered, so it cannot have a switch. This way a switch is always in the
+state of the column it controls.
 
 A switch is checked (`✓`) while its column is shown and unchecked (a blank mark) while it is
 hidden. Selecting a switch with <kbd>Enter</kbd> or a left click toggles the column: the commit list

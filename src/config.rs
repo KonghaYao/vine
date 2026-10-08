@@ -498,13 +498,9 @@ impl UiCommitListConfig {
 
     /// Whether the given column of the commit list is hidden by these settings.
     pub fn hides(self, column: &UserListColumnType) -> bool {
-        match column {
-            UserListColumnType::Date => !self.show_date,
-            UserListColumnType::Hash => !self.show_hash,
-            UserListColumnType::Name => !self.show_author,
-            UserListColumnType::Graph
-            | UserListColumnType::Marker
-            | UserListColumnType::Subject => false,
+        match CommitListColumn::of_list_column(column) {
+            Some(column) => !self.shows(column),
+            None => false,
         }
     }
 }
@@ -528,6 +524,43 @@ impl CommitListColumn {
             CommitListColumn::Hash => "Hash",
             CommitListColumn::Author => "Author",
         }
+    }
+
+    /// The column of `ui.list.columns` that the switch shows or hides.
+    pub fn list_column(self) -> UserListColumnType {
+        match self {
+            CommitListColumn::Date => UserListColumnType::Date,
+            CommitListColumn::Hash => UserListColumnType::Hash,
+            CommitListColumn::Author => UserListColumnType::Name,
+        }
+    }
+
+    /// The switch that shows or hides the given column of `ui.list.columns`, or `None` when the
+    /// column is not one of the optional ones.
+    pub fn of_list_column(column: &UserListColumnType) -> Option<Self> {
+        match column {
+            UserListColumnType::Date => Some(CommitListColumn::Date),
+            UserListColumnType::Hash => Some(CommitListColumn::Hash),
+            UserListColumnType::Name => Some(CommitListColumn::Author),
+            UserListColumnType::Graph
+            | UserListColumnType::Marker
+            | UserListColumnType::Subject => None,
+        }
+    }
+
+    /// The switches that the commit list actually uses, in the order of the menu.
+    ///
+    /// A column that is not in `ui.list.columns` is never rendered, so it has no switch: a switch
+    /// is always in the same state as the column it controls.
+    pub fn used_by(columns: &[UserListColumnType]) -> Vec<Self> {
+        [
+            CommitListColumn::Date,
+            CommitListColumn::Hash,
+            CommitListColumn::Author,
+        ]
+        .into_iter()
+        .filter(|column| columns.contains(&column.list_column()))
+        .collect()
     }
 }
 
@@ -1214,6 +1247,72 @@ mod tests {
                 &UserListColumnType::Date
             ],
             "the graph, the marker and the subject are never hidden"
+        );
+    }
+
+    #[test]
+    fn test_the_column_switches_follow_the_columns_of_the_commit_list() {
+        for column in [
+            CommitListColumn::Date,
+            CommitListColumn::Hash,
+            CommitListColumn::Author,
+        ] {
+            assert_eq!(
+                CommitListColumn::of_list_column(&column.list_column()),
+                Some(column),
+                "a switch and the column it controls are mapped to each other"
+            );
+        }
+        for column in [
+            UserListColumnType::Graph,
+            UserListColumnType::Marker,
+            UserListColumnType::Subject,
+        ] {
+            assert_eq!(
+                CommitListColumn::of_list_column(&column),
+                None,
+                "{column:?} has no switch"
+            );
+        }
+
+        assert_eq!(
+            CommitListColumn::used_by(&UiListConfig::default().columns),
+            vec![
+                CommitListColumn::Date,
+                CommitListColumn::Hash,
+                CommitListColumn::Author
+            ],
+            "the default configuration uses the three optional columns"
+        );
+        assert_eq!(
+            CommitListColumn::used_by(&[
+                UserListColumnType::Subject,
+                UserListColumnType::Name,
+                UserListColumnType::Date,
+            ]),
+            vec![CommitListColumn::Date, CommitListColumn::Author],
+            "the columns that are not used have no switch"
+        );
+        assert!(
+            CommitListColumn::used_by(&[UserListColumnType::Graph, UserListColumnType::Subject])
+                .is_empty(),
+            "a list without an optional column has no switch"
+        );
+
+        // The switches hide a column of the list, and they never show a column that is not used
+        let hidden = UiCommitListConfig {
+            show_date: false,
+            show_hash: true,
+            show_author: false,
+        };
+        assert!(hidden.hides(&UserListColumnType::Date));
+        assert!(!hidden.hides(&UserListColumnType::Hash));
+        assert!(hidden.hides(&UserListColumnType::Name));
+        assert!(
+            !hidden.hides(&UserListColumnType::Subject)
+                && !hidden.hides(&UserListColumnType::Graph)
+                && !hidden.hides(&UserListColumnType::Marker),
+            "the other columns are never hidden by the switches"
         );
     }
 

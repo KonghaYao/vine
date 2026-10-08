@@ -1141,6 +1141,7 @@ impl App<'_> {
             &commit_hash,
             &refs,
             &self.ctx.core_config.user_command.commands,
+            &self.ctx.ui_config.list.columns,
             menu_context,
         );
         Some((commit_action_menu_name(&commit_hash), entries))

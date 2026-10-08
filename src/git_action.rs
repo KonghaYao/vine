@@ -6,7 +6,7 @@ use std::{
 use rustc_hash::FxHashMap;
 
 use crate::{
-    config::{CommitListColumn, UserCommand},
+    config::{CommitListColumn, UserCommand, UserListColumnType},
     git::{CommitHash, Ref},
 };
 
@@ -430,19 +430,17 @@ fn action_entry(label: impl Into<String>, action: MenuAction) -> ActionMenuEntry
 
 /// The entries that show or hide the optional columns of the commit list.
 ///
-/// They are not git actions, so they are listed whatever the state of the repository is.
-fn column_toggle_entries() -> Vec<ActionMenuEntry> {
-    [
-        CommitListColumn::Date,
-        CommitListColumn::Hash,
-        CommitListColumn::Author,
-    ]
-    .into_iter()
-    .map(|column| ActionMenuEntry::Toggle {
-        label: column.label().into(),
-        column,
-    })
-    .collect()
+/// They are not git actions, so they are listed whatever the state of the repository is, and they
+/// are listed only for the columns that the commit list uses: a switch always shows the state of
+/// the column it controls.
+fn column_toggle_entries(columns: &[UserListColumnType]) -> Vec<ActionMenuEntry> {
+    CommitListColumn::used_by(columns)
+        .into_iter()
+        .map(|column| ActionMenuEntry::Toggle {
+            label: column.label().into(),
+            column,
+        })
+        .collect()
 }
 
 /// Builds the action menu for the given commit.
@@ -572,11 +570,14 @@ fn merge_branch_menu_entries(refs: &[Ref], ctx: &ActionMenuContext) -> Vec<Actio
 
 /// Builds the action menu for the given commit.
 ///
-/// The submenu of each ref attached to the commit is built by [`ref_menu_entries`].
+/// The submenu of each ref attached to the commit is built by [`ref_menu_entries`], and the
+/// switches of the optional columns are built for the columns that are used by the commit list,
+/// which are the ones of `ui.list.columns`.
 pub fn commit_menu_entries(
     commit_hash: &CommitHash,
     refs: &[Ref],
     user_commands: &FxHashMap<String, UserCommand>,
+    columns: &[UserListColumnType],
     ctx: &ActionMenuContext,
 ) -> Vec<ActionMenuEntry> {
     let mut entries = vec![
@@ -650,9 +651,13 @@ pub fn commit_menu_entries(
         }
     }
 
-    // The column toggles are not git actions, so they are not gated by `ctx.writable`
-    entries.push(ActionMenuEntry::Separator);
-    entries.extend(column_toggle_entries());
+    // The column toggles are not git actions, so they are not gated by `ctx.writable`. The
+    // separator is only added when there is at least one switch to separate.
+    let toggles = column_toggle_entries(columns);
+    if !toggles.is_empty() {
+        entries.push(ActionMenuEntry::Separator);
+        entries.extend(toggles);
+    }
 
     entries
 }
@@ -1468,6 +1473,11 @@ mod tests {
         );
     }
 
+    /// The columns that the default configuration uses, which the switches follow.
+    fn default_columns() -> Vec<UserListColumnType> {
+        crate::config::UiListConfig::default().columns
+    }
+
     fn menu_context<'a>(writable: bool, remotes: &'a [String]) -> ActionMenuContext<'a> {
         ActionMenuContext {
             writable,
@@ -1503,6 +1513,7 @@ mod tests {
             &hash,
             &[branch, tag],
             &user_commands(&[(1, "git diff"), (2, "echo hello")]),
+            &default_columns(),
             &menu_context(true, &remotes),
         );
 
@@ -1665,6 +1676,7 @@ mod tests {
             &hash,
             &[branch],
             &user_commands(&[(1, "git diff")]),
+            &default_columns(),
             &menu_context(false, &[]),
         );
 
@@ -1695,11 +1707,56 @@ mod tests {
     }
 
     #[test]
+    fn test_the_column_toggles_follow_the_columns_of_the_commit_list() {
+        let columns_of = |columns: &[UserListColumnType]| {
+            let entries = commit_menu_entries(
+                &commit_hash(1),
+                &[],
+                &user_commands(&[]),
+                columns,
+                &menu_context(true, &[]),
+            );
+            labels(&entries)
+                .into_iter()
+                .skip_while(|label| label != "Rebase onto...")
+                .skip(1)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            columns_of(&[
+                UserListColumnType::Graph,
+                UserListColumnType::Subject,
+                UserListColumnType::Date,
+            ]),
+            vec!["", "Date"],
+            "a column that is not in the list has no switch, so a switch is never in the state of \
+             a column that is not rendered"
+        );
+        assert_eq!(
+            columns_of(&[
+                UserListColumnType::Subject,
+                UserListColumnType::Date,
+                UserListColumnType::Hash,
+                UserListColumnType::Name,
+            ]),
+            vec!["", "Date", "Hash", "Author"],
+            "the switches keep the order of the menu, whatever the order of the columns"
+        );
+        assert_eq!(
+            columns_of(&[UserListColumnType::Graph, UserListColumnType::Subject]),
+            Vec::<String>::new(),
+            "the separator is not added when there is no switch"
+        );
+    }
+
+    #[test]
     fn test_commit_menu_entries_sorts_user_command_numbers_numerically() {
         let entries = commit_menu_entries(
             &commit_hash(1),
             &[],
             &user_commands(&[(10, "ten"), (2, "two"), (1, "one")]),
+            &default_columns(),
             &menu_context(true, &[]),
         );
 
@@ -1734,6 +1791,7 @@ mod tests {
             &commit_hash(1),
             &[],
             &user_commands(&[(1, "one")]),
+            &default_columns(),
             &menu_context(true, &[]),
         );
         assert_eq!(
@@ -1754,6 +1812,7 @@ mod tests {
             &commit_hash(1),
             &[branch],
             &user_commands(&[]),
+            &default_columns(),
             &menu_context_with_current_branch(&[], "main"),
         );
 
@@ -1792,6 +1851,7 @@ mod tests {
             &commit_hash(1),
             &[local, other, remote, tag],
             &user_commands(&[]),
+            &default_columns(),
             &menu_context_with_current_branch(&[], "main"),
         );
 
@@ -1834,6 +1894,7 @@ mod tests {
             &commit_hash(1),
             &[current, tag],
             &user_commands(&[]),
+            &default_columns(),
             &menu_context_with_current_branch(&[], "main"),
         );
 

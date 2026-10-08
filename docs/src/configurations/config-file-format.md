@@ -340,6 +340,11 @@ The order and visibility of columns in the commit list.
   - `hash`
   - `date`
 
+This list is the authority on which columns the commit list has, and on their order: a column type
+that is not listed here is never rendered. The `ui.commit_list` switches hide and show the optional
+columns that are listed here, so the two settings can never disagree; a column that is not listed
+here has no switch in the action menu.
+
 ### `ui.list.subject_min_width`
 
 The minimum width of a subject in the commit list.
@@ -386,12 +391,15 @@ Whether to show the author date of a commit in the commit list.
 - type: `boolean`
 - default: `true`
 
-The column is also hidden when `date` is not listed in `ui.list.columns`.
+The column is only rendered when `date` is also listed in `ui.list.columns`: this value hides a
+column of the list, it never adds one. The column is not rendered when either of the two settings
+says so, so nothing is shown by a switch that is not in the state of its column.
 
 The value can be changed while the application is running: the action menu of a commit ends with a
-separator followed by the `Date`, `Hash` and `Author` switches, which show or hide the three
-optional columns. Selecting a switch updates the commit list immediately and writes the three
-`ui.commit_list` values to the config file, so the choice is kept for the next session.
+separator followed by the `Date`, `Hash` and `Author` switches, which show or hide the optional
+columns that `ui.list.columns` uses (with the default columns, all three of them). Selecting a
+switch updates the commit list immediately and writes the three `ui.commit_list` values to the
+config file, so the choice is kept for the next session.
 
 ### `ui.commit_list.show_hash`
 
@@ -400,7 +408,7 @@ Whether to show the short commit hash in the commit list.
 - type: `boolean`
 - default: `true`
 
-The column is also hidden when `hash` is not listed in `ui.list.columns`.
+The column is only rendered when `hash` is also listed in `ui.list.columns`, like `show_date`.
 
 ### `ui.commit_list.show_author`
 
@@ -409,7 +417,7 @@ Whether to show the name of the author of a commit in the commit list.
 - type: `boolean`
 - default: `true`
 
-The column is also hidden when `name` is not listed in `ui.list.columns`.
+The column is only rendered when `name` is also listed in `ui.list.columns`, like `show_date`.
 
 ### `ui.detail.height`
 
