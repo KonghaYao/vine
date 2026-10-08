@@ -47,10 +47,13 @@ The mouse operations below can be used while the mouse is enabled by `ui.common.
 | Operation                          | Description                                                             |
 | ---------------------------------- | ----------------------------------------------------------------------- |
 | Left click on a commit             | Select the commit (the viewport is not scrolled)                        |
+| Double click on a ref badge        | Switch to that ref                                                      |
 | Right click                        | Open the action menu for the commit under the cursor                    |
 | Wheel up/down                      | Scroll the list by 3 rows                                               |
 | Drag the scrollbar thumb           | Scroll the list                                                         |
 | Left click on the scrollbar track  | Scroll the list to the clicked position, then continue dragging         |
+
+Note: The refs of a commit are shown as reversed badges in front of its subject. Double clicking one of them switches to that ref: a local branch is checked out, a remote branch is checked out as the local branch that tracks it and then pulled (or created as a new tracking branch when the local branch does not exist), and a tag is checked out detached. When the switch fails, the reason is shown in the status line.
 
 Note: Like <kbd>Ctrl-e/y</kbd>, the wheel and the scrollbar only scroll the list; they do not change the selected commit, and the selection may be scrolled out of the screen.
 

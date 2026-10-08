@@ -339,6 +339,7 @@ fn build_lines(
     if mouse_enabled {
         let mouse_helps = vec![
             ("Left click", "Select commit"),
+            ("Double click ref badge", "Switch to that ref"),
             ("Wheel up/down", "Scroll up/down (selection is unchanged)"),
             ("Scrollbar drag", "Scroll (selection is unchanged)"),
             ("Right click", "Open action menu"),

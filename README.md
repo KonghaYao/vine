@@ -93,6 +93,7 @@ The [default key bindings](https://lusingander.github.io/serie/keybindings/index
 The commit list can also be operated with the mouse (enabled by default, see `ui.common.mouse`):
 
 - Left click on a commit: select the commit
+- Double click on a ref badge: switch to that ref (a remote branch is checked out as its local branch and pulled, or created as a tracking branch when the local branch does not exist)
 - Wheel up/down: scroll the commit list by 3 rows
 - Drag the scrollbar thumb, or left click on the scrollbar track: scroll the commit list
 

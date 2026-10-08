@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     io::{self, Write},
     rc::Rc,
     thread,
@@ -23,7 +24,7 @@ use crate::{
     },
     git::{self, Commit, FileChange, Head, Ref, Repository},
     git_action::{
-        self, action_feedback, commit_menu_entries, ref_menu_entries, switch_action_for_ref,
+        self, action_feedback, commit_menu_entries, ref_menu_entries, switch_actions_for_ref,
         write_action_error, ActionFeedback, ActionMenuContext, ActionMenuEntry, GitAction,
     },
     graph::GraphImageManager,
@@ -95,6 +96,8 @@ pub struct App<'a> {
     app_status: AppStatus,
     /// Whether a remote action is running in the background.
     remote_action_in_progress: bool,
+    /// The actions that are queued to run after the current one succeeded.
+    pending_actions: VecDeque<GitAction>,
     ctx: Rc<AppContext>,
     ec: &'a EventController,
 }
@@ -154,6 +157,7 @@ impl<'a> App<'a> {
             view,
             app_status: AppStatus::default(),
             remote_action_in_progress: false,
+            pending_actions: VecDeque::new(),
             ctx,
             ec,
         };
@@ -817,10 +821,21 @@ impl App<'_> {
             self.ec.send(AppEvent::NotifyError(reason.into()));
             return;
         }
-        match switch_action_for_ref(&r) {
-            Ok(action) => self.execute_git_action(action),
+        let path = self.repository.path().to_path_buf();
+        match switch_actions_for_ref(&r, |name| git::local_branch_exists(&path, name)) {
+            Ok(actions) => self.execute_git_actions(actions),
             Err(message) => self.ec.send(AppEvent::NotifyError(message)),
         }
+    }
+
+    /// Runs the actions in order, starting each one after the previous one succeeded.
+    fn execute_git_actions(&mut self, actions: Vec<GitAction>) {
+        let mut actions = actions.into_iter();
+        let Some(first) = actions.next() else {
+            return;
+        };
+        self.pending_actions = actions.collect();
+        self.execute_git_action(first);
     }
 
     fn execute_git_action(&mut self, action: GitAction) {
@@ -866,8 +881,15 @@ impl App<'_> {
                     self.ec.send(AppEvent::OpenActionOutput(output));
                 }
                 self.ec.send(AppEvent::NotifySuccess(summary));
+                // The next action of a chain is started from the event loop, so that its progress
+                // is shown after the summary of the action that just finished.
+                if let Some(next) = self.pending_actions.pop_front() {
+                    self.ec.send(AppEvent::ExecuteGitAction(Box::new(next)));
+                }
             }
             ActionFeedback::Error { message } => {
+                // The rest of a chain is dropped, because it depends on the action that failed
+                self.pending_actions.clear();
                 self.ec.send(AppEvent::NotifyError(message));
             }
         }

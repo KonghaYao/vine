@@ -249,6 +249,21 @@ pub fn load_remotes(path: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Whether the local branch with the given name exists, or false when it cannot be determined.
+pub fn local_branch_exists(path: &Path, name: &str) -> bool {
+    Command::new("git")
+        .arg("show-ref")
+        .arg("--verify")
+        .arg("--quiet")
+        .arg(format!("refs/heads/{name}"))
+        .current_dir(path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 fn check_git_repository(path: &Path) -> Result<()> {
     if !is_inside_work_tree(path) && !is_bare_repository(path) {
         let msg = "not a git repository (or any of the parent directories)";
