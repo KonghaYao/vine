@@ -13,7 +13,7 @@ The protocol used to render the commit graph.
 
 _Possible values:_ `auto`, `iterm`, `kitty`, `kitty-unicode`, `ascii`
 
-- `ascii`: Unicode box-drawing characters (`● │ ─ ╭ ╮ ╰ ╯`), which works in any terminal. This is the default.
+- `ascii`: Unicode box-drawing characters (`┃ ─ ╭ ╮ ╰ ╯`), which works in any terminal. This is the default.
 - `iterm`: [iTerm2 inline images protocol](https://iterm2.com/documentation-images.html)
 - `kitty`: [kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
 - `kitty-unicode`: kitty graphics protocol with [Unicode placeholders](https://sw.kovidgoyal.net/kitty/graphics-protocol/#unicode-placeholders), which also works under tmux

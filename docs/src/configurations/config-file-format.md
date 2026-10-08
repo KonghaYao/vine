@@ -129,7 +129,7 @@ The protocol used to render the commit graph.
 - type: `string` (enum)
 - default: `ascii`
 - possible values:
-  - `ascii` — Unicode box-drawing characters (`● │ ─ ╭ ╮ ╰ ╯`). Works in any terminal, and is used unless an image protocol is specified.
+  - `ascii` — Unicode box-drawing characters (`┃ ─ ╭ ╮ ╰ ╯`). Works in any terminal, and is used unless an image protocol is specified.
   - `iterm` — [iTerm2 inline images protocol](https://iterm2.com/documentation-images.html)
   - `kitty` — [kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
   - `kitty-unicode` — kitty graphics protocol with [Unicode placeholders](https://sw.kovidgoyal.net/kitty/graphics-protocol/#unicode-placeholders) (also works under tmux)
