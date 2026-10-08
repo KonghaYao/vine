@@ -23,6 +23,8 @@ The terminals on which each has been confirmed to work are listed below.
 
 \*Not only the VSCode integrated terminal, but any terminal emulator using [xterm.js](https://xtermjs.org) may basically work in the same way as long as [image display feature is enabled](https://github.com/xtermjs/xterm.js/tree/master/addons/addon-image).
 
+`auto` identifies these terminals by their environment variables (`TERM_PROGRAM`, `LC_TERMINAL`), so a terminal that supports the protocol but cannot be identified that way (Rio, and other xterm.js based terminals with a different `TERM_PROGRAM`) uses the ASCII graph instead. Specify `iterm` as the protocol option or config to use the image graph there.
+
 ### Terminal graphics protocol
 
 | Terminal emulator                         | Unicode placeholder | Note |
