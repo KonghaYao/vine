@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use ratatui::{
-    crossterm::event::KeyEvent,
+    crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind},
     layout::{Constraint, Layout, Rect},
     Frame,
 };
@@ -109,6 +109,9 @@ impl<'a> DetailView<'a> {
             UserEvent::UserCommand(n) => {
                 self.tx.send(AppEvent::OpenUserCommand(n));
             }
+            UserEvent::Actions => {
+                self.tx.send(AppEvent::OpenActions);
+            }
             UserEvent::HelpToggle => {
                 self.tx.send(AppEvent::OpenHelp);
             }
@@ -119,6 +122,12 @@ impl<'a> DetailView<'a> {
                 self.refresh();
             }
             _ => {}
+        }
+    }
+
+    pub fn handle_mouse_event(&mut self, mouse: MouseEvent) {
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right)) {
+            self.tx.send(AppEvent::OpenActions);
         }
     }
 

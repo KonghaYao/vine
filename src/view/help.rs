@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use ratatui::{
-    crossterm::event::KeyEvent,
+    crossterm::event::{KeyEvent, MouseEvent},
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Stylize},
     text::{Line, Span},
@@ -34,8 +34,12 @@ pub struct HelpView<'a> {
 
 impl HelpView<'_> {
     pub fn new<'a>(before: View<'a>, ctx: Rc<AppContext>, tx: Sender) -> HelpView<'a> {
-        let (help_key_lines, help_value_lines) =
-            build_lines(&ctx.color_theme, &ctx.keybind, &ctx.core_config);
+        let (help_key_lines, help_value_lines) = build_lines(
+            &ctx.color_theme,
+            &ctx.keybind,
+            &ctx.core_config,
+            ctx.ui_config.common.mouse,
+        );
         let help_key_line_max_width = help_key_lines
             .iter()
             .map(|line| line.width())
@@ -101,6 +105,10 @@ impl HelpView<'_> {
             }
             _ => {}
         }
+    }
+
+    pub fn handle_mouse_event(&mut self, _mouse: MouseEvent) {
+        // TODO: mouse operations on this view are implemented in the following steps
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
@@ -197,6 +205,7 @@ fn build_lines(
     color_theme: &ColorTheme,
     keybind: &KeyBind,
     core_config: &CoreConfig,
+    mouse_enabled: bool,
 ) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
     let user_command_help_items = keybind
         .user_command_event_numbers()
@@ -240,13 +249,14 @@ fn build_lines(
         (vec![UserEvent::PageUp], "Scroll page up".into()),
         (vec![UserEvent::HalfPageDown], "Scroll half page down".into()),
         (vec![UserEvent::HalfPageUp], "Scroll half page up".into()),
-        (vec![UserEvent::ScrollDown], "Scroll down".into()),
-        (vec![UserEvent::ScrollUp], "Scroll up".into()),
+        (vec![UserEvent::ScrollDown], "Scroll down (selection is unchanged)".into()),
+        (vec![UserEvent::ScrollUp], "Scroll up (selection is unchanged)".into()),
         (vec![UserEvent::SelectTop], "Select top of the screen".into()),
         (vec![UserEvent::SelectMiddle], "Select middle of the screen".into()),
         (vec![UserEvent::SelectBottom], "Select bottom of the screen".into()),
         (vec![UserEvent::Confirm], "Show commit details".into()),
         (vec![UserEvent::RefList], "Open refs list".into()),
+        (vec![UserEvent::Actions], "Open action menu".into()),
         (vec![UserEvent::Search], "Start search".into()),
         (vec![UserEvent::Cancel], "Cancel search".into()),
         (vec![UserEvent::GoToNext], "Go to next search match".into()),
@@ -277,6 +287,7 @@ fn build_lines(
         (vec![UserEvent::Refresh], "Refresh".into()),
         (vec![UserEvent::ShortCopy], "Copy commit short hash".into()),
         (vec![UserEvent::FullCopy], "Copy commit hash".into()),
+        (vec![UserEvent::Actions], "Open action menu".into()),
     ];
     detail_helps.extend(user_command_help_items.clone());
     let (detail_key_lines, detail_value_lines) = build_block_lines("Commit Detail:", detail_helps, color_theme, keybind);
@@ -291,6 +302,7 @@ fn build_lines(
         (vec![UserEvent::NavigateLeft], "Close node".into()),
         (vec![UserEvent::Refresh], "Refresh".into()),
         (vec![UserEvent::ShortCopy], "Copy ref name".into()),
+        (vec![UserEvent::Actions], "Open action menu".into()),
     ];
     let (refs_key_lines, refs_value_lines) = build_block_lines("Refs List:", refs_helps, color_theme, keybind);
     
@@ -309,26 +321,58 @@ fn build_lines(
         (vec![UserEvent::GoToParent], "Select parent commit".into()),
         (vec![UserEvent::Refresh], "Refresh".into()),
         (vec![UserEvent::Confirm], "Show commit details".into()),
+        (vec![UserEvent::Actions], "Open action menu".into()),
     ];
     user_command_helps.extend(user_command_help_items);
     let (user_command_key_lines, user_command_value_lines) = build_block_lines("User Command:", user_command_helps, color_theme, keybind);
 
-    let key_lines = join_line_groups_with_empty(vec![
+    let mut key_groups = vec![
         common_key_lines,
         help_key_lines,
         list_key_lines,
-        detail_key_lines,
-        refs_key_lines,
-        user_command_key_lines,
-    ]);
-    let value_lines = join_line_groups_with_empty(vec![
+    ];
+    let mut value_groups = vec![
         common_value_lines,
         help_value_lines,
         list_value_lines,
-        detail_value_lines,
-        refs_value_lines,
-        user_command_value_lines,
-    ]);
+    ];
+    if mouse_enabled {
+        let mouse_helps = vec![
+            ("Left click", "Select commit"),
+            ("Wheel up/down", "Scroll up/down (selection is unchanged)"),
+            ("Scrollbar drag", "Scroll (selection is unchanged)"),
+            ("Right click", "Open action menu"),
+        ];
+        let (mouse_key_lines, mouse_value_lines) = build_literal_block_lines("Mouse:", mouse_helps, color_theme);
+        key_groups.push(mouse_key_lines);
+        value_groups.push(mouse_value_lines);
+    }
+    key_groups.extend([detail_key_lines, refs_key_lines, user_command_key_lines]);
+    value_groups.extend([detail_value_lines, refs_value_lines, user_command_value_lines]);
+
+    let key_lines = join_line_groups_with_empty(key_groups);
+    let value_lines = join_line_groups_with_empty(value_groups);
+
+    (key_lines, value_lines)
+}
+
+/// Builds the lines of a block whose keys are not keybindings (e.g. mouse operations).
+fn build_literal_block_lines(
+    title: &'static str,
+    helps: Vec<(&'static str, &'static str)>,
+    color_theme: &ColorTheme,
+) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
+    let mut key_lines = vec![Line::from(title)
+        .fg(color_theme.help_block_title_fg)
+        .add_modifier(Modifier::BOLD)];
+    let mut value_lines = vec![Line::from("")];
+
+    key_lines.extend(
+        helps
+            .iter()
+            .map(|(label, _)| Line::from(label.fg(color_theme.help_key_fg))),
+    );
+    value_lines.extend(helps.into_iter().map(|(_, value)| Line::raw(value)));
 
     (key_lines, value_lines)
 }

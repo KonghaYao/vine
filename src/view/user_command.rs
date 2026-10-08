@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use ansi_to_tui::IntoText as _;
 use ratatui::{
-    crossterm::event::KeyEvent,
+    crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind},
     layout::{Constraint, Layout, Rect},
     text::Line,
     Frame,
@@ -26,7 +26,10 @@ pub struct UserCommandView<'a> {
     commit_list_state: Option<CommitListState<'a>>,
     commit_user_command_state: CommitUserCommandState,
 
-    user_command_number: usize,
+    /// The number of the user command rendered by this view.
+    ///
+    /// This is `None` when the view renders the output of a git action instead of a user command.
+    user_command_number: Option<usize>,
     user_command_output_lines: Vec<Line<'a>>,
 
     ctx: Rc<AppContext>,
@@ -37,7 +40,7 @@ impl<'a> UserCommandView<'a> {
     pub fn new(
         commit_list_state: CommitListState<'a>,
         command_output: String,
-        user_command_number: usize,
+        user_command_number: Option<usize>,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> UserCommandView<'a> {
@@ -111,12 +114,15 @@ impl<'a> UserCommandView<'a> {
                 self.tx.send(AppEvent::OpenHelp);
             }
             UserEvent::UserCommand(n) => {
-                if n == self.user_command_number {
+                if Some(n) == self.user_command_number {
                     self.tx.send(AppEvent::CloseUserCommand);
                 } else {
                     // switch to another user command
                     self.tx.send(AppEvent::OpenUserCommand(n));
                 }
+            }
+            UserEvent::Actions => {
+                self.tx.send(AppEvent::OpenActions);
             }
             UserEvent::Confirm => {
                 self.tx.send(AppEvent::OpenDetail);
@@ -128,6 +134,12 @@ impl<'a> UserCommandView<'a> {
                 self.refresh();
             }
             _ => {}
+        }
+    }
+
+    pub fn handle_mouse_event(&mut self, mouse: MouseEvent) {
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right)) {
+            self.tx.send(AppEvent::OpenActions);
         }
     }
 
@@ -225,24 +237,23 @@ impl<'a> UserCommandView<'a> {
     ) where
         F: FnOnce(&mut CommitListState<'a>),
     {
+        let Some(user_command_number) = self.user_command_number else {
+            // The output of a git action is not bound to a commit, so there is nothing to run
+            return;
+        };
         let commit_list_state = self.as_mut_list_state();
         update_commit_list_state(commit_list_state);
 
         let selected = commit_list_state.selected_commit_hash().clone();
         let (commit, _) = repository.commit_detail(&selected);
         let refs: Vec<Ref> = repository.refs(&selected).into_iter().cloned().collect();
-        self.user_command_output_lines = exec_command(
-            &commit,
-            &refs,
-            self.user_command_number,
-            view_area,
-            &self.ctx,
-        )
-        .and_then(|output| build_user_command_output_lines(output, self.ctx.clone()))
-        .unwrap_or_else(|err| {
-            self.tx.send(AppEvent::NotifyError(err));
-            vec![]
-        });
+        self.user_command_output_lines =
+            exec_command(&commit, &refs, user_command_number, view_area, &self.ctx)
+                .and_then(|output| build_user_command_output_lines(output, self.ctx.clone()))
+                .unwrap_or_else(|err| {
+                    self.tx.send(AppEvent::NotifyError(err));
+                    vec![]
+                });
 
         self.commit_user_command_state.select_first();
     }
@@ -250,12 +261,13 @@ impl<'a> UserCommandView<'a> {
     pub fn refresh(&self) {
         let list_state = self.as_list_state();
         let list_context = ListRefreshViewContext::from(list_state);
-        let user_command_context = UserCommandRefreshViewContext {
-            n: self.user_command_number,
-        };
-        let context = RefreshViewContext::UserCommand {
-            list_context,
-            user_command_context,
+        let context = match self.user_command_number {
+            Some(n) => RefreshViewContext::UserCommand {
+                list_context,
+                user_command_context: UserCommandRefreshViewContext { n },
+            },
+            // The output of a git action does not run a user command, so the list is refreshed
+            None => RefreshViewContext::List { list_context },
         };
         self.tx.send(AppEvent::Refresh(context));
     }

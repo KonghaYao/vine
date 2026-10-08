@@ -88,6 +88,24 @@ You can see the keybindings by pressing the `?` key.
 
 The [default key bindings](https://lusingander.github.io/serie/keybindings/index.html) can be overridden. See [Custom Keybindings](https://lusingander.github.io/serie/keybindings/custom-keybindings.html) for more information.
 
+### Mouse
+
+The commit list can also be operated with the mouse (enabled by default, see `ui.common.mouse`):
+
+- Left click on a commit: select the commit
+- Wheel up/down: scroll the commit list by 3 rows
+- Drag the scrollbar thumb, or left click on the scrollbar track: scroll the commit list
+
+Scrolling with the wheel or the scrollbar does not change the selected commit, in the same way as <kbd>Ctrl-e</kbd>/<kbd>Ctrl-y</kbd>. Note that the selected commit can be scrolled out of the screen, in which case no row is highlighted.
+
+While the mouse is captured by the application, hold `Shift` to select and copy text with your terminal. Set `ui.common.mouse = false` to disable mouse operations and always use the terminal native mouse behavior.
+
+### Actions
+
+Pressing <kbd>x</kbd> (or right clicking the commit list) opens the action menu for the selected commit or ref, where common git operations (create/checkout/merge/rebase/rename/delete branches, copying the commit hash, running user commands, ...) can be executed without leaving the application.
+
+Actions cover the common commit, branch, tag and stash operations (including checkout, merge, rebase, cherry-pick, revert, reset, and pushing/pulling/fetching from a remote), and the destructive ones are confirmed first. Remote operations run in the background, so the application stays responsive while they are in progress. The whole feature can be disabled with `actions.enable = false`.
+
 ### Config
 
 Config files are loaded in the following order of priority:

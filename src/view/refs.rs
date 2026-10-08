@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use ratatui::{
-    crossterm::event::KeyEvent,
+    crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind},
     layout::{Constraint, Layout, Rect},
     Frame,
 };
@@ -83,6 +83,9 @@ impl<'a> RefsView<'a> {
             UserEvent::ShortCopy | UserEvent::FullCopy => {
                 self.copy_ref_name();
             }
+            UserEvent::Actions => {
+                self.tx.send(AppEvent::OpenActions);
+            }
             UserEvent::HelpToggle => {
                 self.tx.send(AppEvent::OpenHelp);
             }
@@ -90,6 +93,12 @@ impl<'a> RefsView<'a> {
                 self.refresh();
             }
             _ => {}
+        }
+    }
+
+    pub fn handle_mouse_event(&mut self, mouse: MouseEvent) {
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right)) {
+            self.tx.send(AppEvent::OpenActions);
         }
     }
 
@@ -140,6 +149,11 @@ impl<'a> RefsView<'a> {
         let refs_width =
             (area.width.saturating_sub(graph_width)).min(self.ctx.ui_config.refs.width);
         Layout::horizontal([Constraint::Min(0), Constraint::Length(refs_width)]).areas(area)
+    }
+
+    /// The name of the selected ref, or `None` when a category or an inner node is selected.
+    pub fn selected_ref_name(&self) -> Option<String> {
+        self.ref_list_state.selected_leaf_ref_name()
     }
 
     fn update_commit_list_selected(&mut self) {

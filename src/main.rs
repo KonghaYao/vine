@@ -5,6 +5,7 @@ mod config;
 mod event;
 mod external;
 mod git;
+mod git_action;
 mod graph;
 mod keybind;
 mod protocol;
@@ -150,7 +151,8 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let (core_config, ui_config, graph_config, color_theme, keybind_patch) = config::load()?;
+    let (core_config, ui_config, graph_config, actions_config, color_theme, keybind_patch) =
+        config::load()?;
     let keybind = keybind::KeyBind::new(keybind_patch);
 
     let max_count = args.max_count;
@@ -172,11 +174,12 @@ fn main() -> Result<()> {
         keybind,
         core_config,
         ui_config,
+        actions_config,
         color_theme,
         image_protocol,
     });
 
-    let ec = event::EventController::init();
+    let ec = event::EventController::init(ctx.ui_config.common.mouse);
     let mut refresh_view_context = None;
     let mut terminal = None;
 
@@ -198,6 +201,12 @@ fn main() -> Result<()> {
 
         if terminal.is_none() {
             terminal = Some(ratatui::init());
+            if ctx.ui_config.common.mouse {
+                // `ratatui::init()` restores the terminal on panic, but it does not disable the
+                // mouse capture, so install an additional hook after it.
+                event::install_mouse_capture_panic_hook();
+                ec.enable_mouse_capture();
+            }
         }
 
         let mut app = App::new(
@@ -224,6 +233,7 @@ fn main() -> Result<()> {
         }
     };
 
+    ec.disable_mouse_capture();
     ratatui::restore();
     ret.map_err(Into::into)
 }

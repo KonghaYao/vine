@@ -7,17 +7,18 @@ use std::{
     thread,
 };
 
-use ratatui::crossterm::event::KeyEvent;
+use ratatui::crossterm::event::{KeyEvent, MouseEvent, MouseEventKind};
 use serde::{
     de::{self, Deserializer, Visitor},
     Deserialize,
 };
 
-use crate::view::RefreshViewContext;
+use crate::{git_action::GitAction, view::RefreshViewContext};
 
 #[derive(Debug)]
 pub enum AppEvent {
     Key(KeyEvent),
+    Mouse(MouseEvent),
     Resize(usize, usize),
     Quit,
     OpenDetail,
@@ -26,6 +27,14 @@ pub enum AppEvent {
     CloseUserCommand,
     OpenRefs,
     CloseRefs,
+    OpenActions,
+    CloseActions,
+    ExecuteGitAction(Box<GitAction>),
+    RemoteActionFinished {
+        action: Box<GitAction>,
+        result: Result<String, String>,
+    },
+    OpenActionOutput(String),
     OpenHelp,
     CloseHelp,
     SelectNewerCommit,
@@ -48,7 +57,6 @@ pub enum AppEvent {
         options: String,
         matched: bool,
     },
-    #[expect(dead_code)]
     NotifyInfo(String),
     NotifySuccess(String),
     #[expect(dead_code)]
@@ -64,6 +72,13 @@ pub struct Sender {
 impl Sender {
     pub fn send(&self, event: AppEvent) {
         self.tx.send(event).unwrap();
+    }
+
+    /// Sends the event, ignoring the failure when the application is already shutting down.
+    ///
+    /// This is used by background tasks, which may finish after the application stopped.
+    pub fn send_if_running(&self, event: AppEvent) {
+        let _ = self.tx.send(event);
     }
 }
 
@@ -95,10 +110,11 @@ pub struct EventController {
     rx: Receiver,
     stop: Arc<AtomicBool>,
     handle: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
+    mouse_capture: bool,
 }
 
 impl EventController {
-    pub fn init() -> Self {
+    pub fn init(mouse_capture: bool) -> Self {
         let (tx, rx) = mpsc::channel();
         let tx = Sender { tx };
         let rx = Receiver { rx };
@@ -108,6 +124,7 @@ impl EventController {
             rx,
             stop: Arc::new(AtomicBool::new(false)),
             handle: Arc::new(Mutex::new(None)),
+            mouse_capture,
         };
         controller.start();
 
@@ -130,6 +147,14 @@ impl EventController {
                         }
                         ratatui::crossterm::event::Event::Resize(w, h) => {
                             tx.send(AppEvent::Resize(w as usize, h as usize));
+                        }
+                        // Idle mouse movement has no effect, so it is not forwarded to avoid
+                        // redrawing the terminal on every movement.
+                        // Allow it again when hover support is implemented (see PLAN §6-A-4).
+                        ratatui::crossterm::event::Event::Mouse(mouse)
+                            if is_forwarded_mouse_event(&mouse) =>
+                        {
+                            tx.send(AppEvent::Mouse(mouse));
                         }
                         _ => {}
                     },
@@ -158,15 +183,45 @@ impl EventController {
 
         self.drain_crossterm_event();
         self.start();
+        self.enable_mouse_capture();
     }
 
     pub fn suspend(&self) {
         self.stop();
+        self.disable_mouse_capture();
 
         ratatui::crossterm::terminal::disable_raw_mode().unwrap();
         ratatui::crossterm::execute!(
             std::io::stdout(),
             ratatui::crossterm::terminal::LeaveAlternateScreen
+        )
+        .unwrap();
+    }
+
+    /// Enable the mouse capture, so that mouse events are reported to the application.
+    ///
+    /// Does nothing when the mouse is disabled by the configuration.
+    pub fn enable_mouse_capture(&self) {
+        if !self.mouse_capture {
+            return;
+        }
+        ratatui::crossterm::execute!(
+            std::io::stdout(),
+            ratatui::crossterm::event::EnableMouseCapture
+        )
+        .unwrap();
+    }
+
+    /// Disable the mouse capture, so that the mouse is handled by the outer program again.
+    ///
+    /// Does nothing when the mouse is disabled by the configuration.
+    pub fn disable_mouse_capture(&self) {
+        if !self.mouse_capture {
+            return;
+        }
+        ratatui::crossterm::execute!(
+            std::io::stdout(),
+            ratatui::crossterm::event::DisableMouseCapture
         )
         .unwrap();
     }
@@ -195,6 +250,31 @@ impl EventController {
     pub fn recv(&self) -> AppEvent {
         self.rx.recv()
     }
+}
+
+/// Whether the mouse event should be forwarded to the application.
+///
+/// Idle mouse movement has no effect, so it is not forwarded to avoid redrawing the terminal on
+/// every movement. Idle movement should be forwarded again when hover support is implemented
+/// (see PLAN §6-A-4).
+fn is_forwarded_mouse_event(mouse: &MouseEvent) -> bool {
+    !matches!(mouse.kind, MouseEventKind::Moved)
+}
+
+/// Install a panic hook that disables the mouse capture before the previously installed hook runs.
+///
+/// The hook installed by `ratatui::init()` restores the raw mode and the alternate screen, but it
+/// does not disable the mouse capture. Without this hook, the terminal is left in mouse mode when
+/// the application panics, so this must be installed *after* `ratatui::init()`.
+pub fn install_mouse_capture_panic_hook() {
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let _ = ratatui::crossterm::execute!(
+            std::io::stdout(),
+            ratatui::crossterm::event::DisableMouseCapture
+        );
+        hook(panic_info);
+    }));
 }
 
 // The event triggered by user's key input
@@ -227,6 +307,7 @@ pub enum UserEvent {
     GoToPrevious,
     Confirm,
     RefList,
+    Actions,
     Search,
     UserCommand(usize),
     SearchTargetToggle,
@@ -292,6 +373,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "go_to_previous" => Ok(UserEvent::GoToPrevious),
                         "confirm" => Ok(UserEvent::Confirm),
                         "ref_list" | "ref_list_toggle" => Ok(UserEvent::RefList),
+                        "open_actions" => Ok(UserEvent::Actions),
                         "search" => Ok(UserEvent::Search),
                         "search_target_toggle" => Ok(UserEvent::SearchTargetToggle),
                         "ignore_case_toggle" => Ok(UserEvent::IgnoreCaseToggle),
@@ -365,6 +447,36 @@ impl UserEventWithCount {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mouse_event(kind: MouseEventKind) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: 0,
+            row: 0,
+            modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn test_idle_mouse_movement_is_not_forwarded() {
+        assert!(!is_forwarded_mouse_event(&mouse_event(
+            MouseEventKind::Moved
+        )));
+    }
+
+    #[test]
+    fn test_mouse_operations_are_forwarded() {
+        for kind in [
+            MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left),
+            MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Right),
+            MouseEventKind::Up(ratatui::crossterm::event::MouseButton::Left),
+            MouseEventKind::Drag(ratatui::crossterm::event::MouseButton::Left),
+            MouseEventKind::ScrollUp,
+            MouseEventKind::ScrollDown,
+        ] {
+            assert!(is_forwarded_mouse_event(&mouse_event(kind)), "{kind:?}");
+        }
+    }
 
     #[test]
     fn test_user_event_with_count_new() {

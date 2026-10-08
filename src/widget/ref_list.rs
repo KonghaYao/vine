@@ -97,6 +97,40 @@ impl RefListState {
         self.selected.last().cloned()
     }
 
+    /// The name of the selected ref, or `None` when a category or an inner node is selected.
+    pub fn selected_leaf_ref_name(&self) -> Option<String> {
+        // the categories are always at the root of the tree
+        if self.selected.len() <= 1 {
+            return None;
+        }
+        let index = self.selected_index()?;
+        let row = self.visible_rows.get(index)?;
+        if row.has_children {
+            return None;
+        }
+        self.selected.last().cloned()
+    }
+
+    /// Opens every node, so that all refs are visible.
+    pub fn open_all(&mut self) {
+        let mut opened = HashSet::new();
+        collect_all_node_identifiers(&self.roots, &[], &mut opened);
+        self.opened = opened;
+        self.rebuild_visible_rows();
+        self.scroll_to_selection = true;
+    }
+
+    /// Selects the first visible row that is a ref (i.e. that is not a category or an inner node).
+    pub fn select_first_leaf(&mut self) {
+        let index = self
+            .visible_rows
+            .iter()
+            .position(|row| row.depth > 0 && !row.has_children);
+        if let Some(index) = index {
+            self.select_visible_index(index);
+        }
+    }
+
     pub fn selected_branch(&self) -> Option<String> {
         if self.selected.len() > 1
             && (self.selected[0] == TREE_BRANCH_ROOT_IDENT
@@ -178,6 +212,22 @@ fn collect_visible_rows(
         if opened.contains(&identifier) {
             collect_visible_rows(&node.children, opened, &identifier, rows);
         }
+    }
+}
+
+fn collect_all_node_identifiers(
+    nodes: &[RefTreeNode],
+    parent: &[String],
+    identifiers: &mut HashSet<Vec<String>>,
+) {
+    for node in nodes {
+        if node.children.is_empty() {
+            continue;
+        }
+        let mut identifier = parent.to_vec();
+        identifier.push(node.identifier.clone());
+        identifiers.insert(identifier.clone());
+        collect_all_node_identifiers(&node.children, &identifier, identifiers);
     }
 }
 
@@ -395,4 +445,120 @@ fn sort_stash_tree_nodes(nodes: &mut [RefTreeNode]) {
 fn parse_semantic_version_tag(tag: &str) -> Option<Version> {
     let tag = tag.trim_start_matches('v');
     Version::parse(tag).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn refs() -> Vec<Ref> {
+        vec![
+            Ref::Branch {
+                name: "main".into(),
+                target: Default::default(),
+            },
+            Ref::Branch {
+                name: "feature/x".into(),
+                target: Default::default(),
+            },
+            Ref::RemoteBranch {
+                name: "origin/main".into(),
+                target: Default::default(),
+            },
+            Ref::Tag {
+                name: "v1.0.0".into(),
+                target: Default::default(),
+            },
+            Ref::Stash {
+                name: "stash@{0}".into(),
+                message: "WIP".into(),
+                target: Default::default(),
+            },
+        ]
+    }
+
+    fn state() -> RefListState {
+        let refs = refs();
+        let refs: Vec<&Ref> = refs.iter().collect();
+        RefListState::new(&refs)
+    }
+
+    #[test]
+    fn test_selected_leaf_ref_name_ignores_category_and_inner_nodes() {
+        let mut state = state();
+        // only the branches category is opened by default: Branches / feature / main
+        assert_eq!(
+            state.selected_leaf_ref_name(),
+            None,
+            "the branches category is not a ref"
+        );
+
+        state.select_next();
+        assert_eq!(state.selected_leaf_ref_name(), None, "an inner node");
+
+        state.select_next();
+        assert_eq!(state.selected_leaf_ref_name(), Some("main".into()));
+
+        state.select_next();
+        assert_eq!(state.selected_leaf_ref_name(), None, "the remotes category");
+    }
+
+    #[test]
+    fn test_selected_leaf_ref_name_for_branches_tags_and_stashes() {
+        let mut state = state();
+        state.open_all();
+
+        let leaves: Vec<(usize, String)> = state
+            .visible_rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| !row.has_children)
+            .map(|(i, row)| (i, row.identifier.last().cloned().unwrap()))
+            .collect();
+        assert_eq!(
+            leaves
+                .iter()
+                .map(|(_, name)| name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["feature/x", "main", "origin/main", "v1.0.0", "stash@{0}"]
+        );
+
+        // every leaf is selectable and resolves to the name of the ref
+        for (index, name) in leaves {
+            state.select_visible_index(index);
+            assert_eq!(state.selected_leaf_ref_name(), Some(name));
+        }
+    }
+
+    #[test]
+    fn test_open_all_makes_every_ref_visible() {
+        let mut state = state();
+        let visible_before = state.visible_rows.len();
+        state.open_all();
+        assert!(state.visible_rows.len() > visible_before);
+        assert_eq!(
+            state
+                .visible_rows
+                .iter()
+                .filter(|row| !row.has_children)
+                .count(),
+            5
+        );
+    }
+
+    #[test]
+    fn test_select_first_leaf_selects_the_first_ref() {
+        let mut state = state();
+        assert_eq!(state.selected_leaf_ref_name(), None);
+
+        state.select_first_leaf();
+        // the first ref of the opened tree is the first branch
+        state.open_all();
+        state.select_first_leaf();
+        assert_eq!(state.selected_leaf_ref_name(), Some("feature/x".into()));
+
+        let mut empty = RefListState::new(&[]);
+        empty.select_first_leaf();
+        assert_eq!(empty.selected_leaf_ref_name(), None);
+    }
 }

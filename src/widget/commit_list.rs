@@ -28,6 +28,44 @@ static FUZZY_MATCHER: Lazy<SkimMatcherV2> = Lazy::new(|| SkimMatcherV2::default(
 
 const ELLIPSIS: &str = "...";
 
+/// Number of rows scrolled by one wheel event.
+const WHEEL_SCROLL_STEP: usize = 3;
+
+/// Geometry of the scrollbar rendered on the right edge of the commit list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollbarGeometry {
+    /// Row of the top of the thumb, relative to the top of the scrollbar.
+    pub thumb_start: u16,
+    /// Number of rows the thumb occupies.
+    pub thumb_len: u16,
+}
+
+impl ScrollbarGeometry {
+    /// Whether the given row (relative to the top of the scrollbar) is on the thumb.
+    pub fn contains_thumb(&self, row: u16) -> bool {
+        row >= self.thumb_start && row < self.thumb_start + self.thumb_len
+    }
+
+    /// The grab offset for a press at the given row (relative to the top of the scrollbar).
+    ///
+    /// When the thumb is pressed, the cursor keeps its position within the thumb; when the track
+    /// is pressed, the thumb jumps to the pressed row.
+    pub fn grab_offset(&self, row: u16) -> u16 {
+        if self.contains_thumb(row) {
+            row - self.thumb_start
+        } else {
+            0
+        }
+    }
+}
+
+/// Divides `value` by `divisor`, rounding to the nearest integer.
+///
+/// `divisor` must not be zero.
+fn div_round(value: usize, divisor: usize) -> usize {
+    (value + divisor / 2) / divisor
+}
+
 #[derive(Debug)]
 pub struct CommitInfo<'a> {
     commit: &'a Commit,
@@ -241,17 +279,13 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn update_height(&mut self, height: usize) {
+        let was_visible = self.selected_row().is_some();
         self.height = height;
+        self.offset = self.offset.min(self.max_offset());
 
-        if self.total > self.height && self.total - self.height < self.offset {
-            let diff = self.offset - (self.total - self.height);
-            self.selected += diff;
-            self.offset -= diff;
-        }
-        if self.selected >= self.height {
-            let diff = self.selected - self.height + 1;
-            self.selected -= diff;
-            self.offset += diff;
+        // Keep the selection visible when it was visible before the resize
+        if was_visible && self.selected_row().is_none() {
+            self.select_visible_index(self.selected);
         }
     }
 
@@ -283,7 +317,7 @@ impl<'a> CommitListState<'a> {
 
     pub fn select_next(&mut self) {
         if self.total > 0 {
-            self.select_visible_index((self.current_selected_index() + 1).min(self.total - 1));
+            self.select_visible_index((self.selected + 1).min(self.total - 1));
         }
     }
 
@@ -298,44 +332,45 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn selected_commit_parent_hash(&self) -> Option<&CommitHash> {
-        self.commits[self.current_selected_index()]
+        self.commits[self.selected]
             .commit
             .parent_commit_hashes
             .first()
     }
 
     pub fn select_prev(&mut self) {
-        self.select_visible_index(self.current_selected_index().saturating_sub(1));
+        self.select_visible_index(self.selected.saturating_sub(1));
     }
 
     pub fn select_first(&mut self) {
-        self.selected = 0;
-        self.offset = 0;
+        self.select_visible_index(0);
     }
 
     pub fn select_last(&mut self) {
-        self.selected = (self.height - 1).min(self.total - 1);
-        if self.height < self.total {
-            self.offset = self.total - self.height;
-        }
+        self.select_visible_index(self.total.saturating_sub(1));
     }
 
+    /// Scroll the viewport down by one row.
+    ///
+    /// This is a pure scroll: it does not change the selected commit, which is allowed to go
+    /// out of the viewport.
     pub fn scroll_down(&mut self) {
-        if self.offset + self.height < self.total {
-            self.offset += 1;
-            if self.selected > self.effective_scrolloff() {
-                self.selected -= 1;
-            }
-        }
+        self.set_offset(self.offset + 1);
     }
 
+    /// Scroll the viewport up by one row.
+    ///
+    /// This is a pure scroll: it does not change the selected commit, which is allowed to go
+    /// out of the viewport.
     pub fn scroll_up(&mut self) {
-        if self.offset > 0 {
-            self.offset -= 1;
-            if self.selected < self.height.saturating_sub(1 + self.effective_scrolloff()) {
-                self.selected += 1;
-            }
-        }
+        self.set_offset(self.offset.saturating_sub(1));
+    }
+
+    /// Move the viewport to the given offset, clamped to the valid range.
+    ///
+    /// This is a pure scroll: it does not change the selected commit.
+    pub fn set_offset(&mut self, offset: usize) {
+        self.offset = offset.min(self.max_offset());
     }
 
     pub fn scroll_down_page(&mut self) {
@@ -360,19 +395,14 @@ impl<'a> CommitListState<'a> {
         }
         if self.offset + self.height + scroll_height < self.total {
             self.offset += scroll_height;
+            let index = self.selected + scroll_height;
+            self.select_visible_index(index);
         } else {
-            let old_offset = self.offset;
             let size = self.height.min(self.total);
             self.offset = self.total - size;
-            self.selected += scroll_height - (self.offset - old_offset);
-            if self.selected >= size {
-                self.selected = size - 1;
-            }
-        }
-        // At the final page, keep the viewport fixed so further page scrolls
-        // can move the selection to the last commit as before.
-        if self.offset < self.total.saturating_sub(self.height) {
-            self.select_visible_index(self.current_selected_index());
+            // Move the selection by the number of rows actually scrolled, but never past the
+            // last commit, so that further page scrolls reach the last commit.
+            self.selected = (self.selected + scroll_height).min(self.total - 1);
         }
     }
 
@@ -383,43 +413,45 @@ impl<'a> CommitListState<'a> {
         if self.offset > scroll_height {
             self.offset -= scroll_height;
         } else {
-            let old_offset = self.offset;
             self.offset = 0;
-            self.selected = self
-                .selected
-                .saturating_sub(scroll_height - (old_offset - self.offset));
         }
+        let index = self.selected.saturating_sub(scroll_height);
         if self.offset > 0 {
-            self.select_visible_index(self.current_selected_index());
+            self.select_visible_index(index);
+        } else {
+            self.selected = index;
         }
     }
 
     pub fn select_high(&mut self) {
-        self.selected = 0;
+        self.select_visible_index(self.offset);
     }
 
     pub fn select_middle(&mut self) {
-        if self.total > self.height {
-            self.selected = self.height / 2;
+        let row = if self.total > self.height {
+            self.height / 2
         } else {
-            self.selected = self.total / 2;
-        }
+            self.total / 2
+        };
+        self.select_visible_index((self.offset + row).min(self.total.saturating_sub(1)));
     }
 
     pub fn select_low(&mut self) {
-        if self.total > self.height {
-            self.selected = self.height - 1;
+        let row = if self.total > self.height {
+            self.height.saturating_sub(1)
         } else {
-            self.selected = self.total - 1;
-        }
+            self.total.saturating_sub(1)
+        };
+        self.select_visible_index((self.offset + row).min(self.total.saturating_sub(1)));
     }
 
+    /// Select the commit at the given absolute index, keeping the context specified by `scrolloff`.
     fn select_index(&mut self, index: usize) {
         if index < self.total {
             self.offset = index
                 .saturating_sub(self.effective_scrolloff())
-                .min(self.total.saturating_sub(self.height));
-            self.selected = index - self.offset;
+                .min(self.max_offset());
+            self.selected = index;
         }
     }
 
@@ -427,7 +459,19 @@ impl<'a> CommitListState<'a> {
         self.scrolloff.min(self.height.saturating_sub(1) / 2)
     }
 
+    fn max_offset(&self) -> usize {
+        self.total.saturating_sub(self.height)
+    }
+
+    /// Select the commit at the given absolute index, scrolling the viewport to keep it visible.
+    ///
+    /// `scrolloff` is respected, so the viewport is scrolled only when the commit is outside the
+    /// margin, or is not visible at all.
     fn select_visible_index(&mut self, index: usize) {
+        if self.total == 0 {
+            return;
+        }
+        let index = index.min(self.total - 1);
         if self.height == 0 {
             self.select_index(index);
             return;
@@ -435,13 +479,12 @@ impl<'a> CommitListState<'a> {
 
         let margin = self.effective_scrolloff();
         let bottom = self.height - 1 - margin;
-        let max_offset = self.total.saturating_sub(self.height);
         if index < self.offset.saturating_add(margin) {
             self.offset = index.saturating_sub(margin);
         } else if index > self.offset.saturating_add(bottom) {
-            self.offset = index.saturating_sub(bottom).min(max_offset);
+            self.offset = index.saturating_sub(bottom).min(self.max_offset());
         }
-        self.selected = index - self.offset;
+        self.selected = index;
     }
 
     pub fn select_next_match(&mut self) {
@@ -458,10 +501,94 @@ impl<'a> CommitListState<'a> {
             .commit_hash
     }
 
+    /// The absolute index of the selected commit.
     fn current_selected_index(&self) -> usize {
-        self.offset + self.selected
+        self.selected
     }
 
+    /// The row of the selected commit within the viewport, or `None` when it is out of the viewport.
+    pub fn selected_row(&self) -> Option<usize> {
+        if self.total == 0 {
+            return None;
+        }
+        self.selected
+            .checked_sub(self.offset)
+            .filter(|row| *row < self.height)
+    }
+
+    /// The absolute index of the commit displayed at the given screen row, if any.
+    ///
+    /// Rows outside the list area, and rows without a commit, are ignored.
+    pub fn commit_index_at_row(&self, list_area: Rect, row: u16) -> Option<usize> {
+        if row < list_area.y || row >= list_area.bottom() {
+            return None;
+        }
+        let index = self.offset.checked_add((row - list_area.y) as usize)?;
+        (index < self.total).then_some(index)
+    }
+
+    /// The scrollbar geometry, or `None` when the scrollbar is not shown.
+    ///
+    /// The scrollbar is shown only when the list is longer than the viewport.
+    pub fn scrollbar_geometry(&self) -> Option<ScrollbarGeometry> {
+        let thumb_len = self.scrollbar_thumb_len()?;
+        let max_start = self.height - thumb_len;
+        let thumb_start = if max_start == 0 {
+            0
+        } else {
+            div_round(self.offset * max_start, self.total - self.height).min(max_start)
+        };
+        Some(ScrollbarGeometry {
+            thumb_start: thumb_start as u16,
+            thumb_len: thumb_len as u16,
+        })
+    }
+
+    /// The viewport offset corresponding to the given scrollbar thumb position.
+    ///
+    /// This is the reverse mapping of [`Self::scrollbar_geometry`], and is used for dragging and
+    /// clicking the scrollbar. The result is clamped to the valid offset range.
+    pub fn offset_for_thumb_start(&self, thumb_start: u16) -> usize {
+        let Some(thumb_len) = self.scrollbar_thumb_len() else {
+            return 0;
+        };
+        let max_start = self.height - thumb_len;
+        if max_start == 0 {
+            // The thumb occupies the whole track, so there is no position information
+            return 0;
+        }
+        let thumb_start = (thumb_start as usize).min(max_start);
+        div_round(thumb_start * (self.total - self.height), max_start).min(self.total - self.height)
+    }
+
+    /// The length of the scrollbar thumb in rows, or `None` when the scrollbar is not shown.
+    fn scrollbar_thumb_len(&self) -> Option<usize> {
+        if self.height == 0 || self.total <= self.height {
+            return None;
+        }
+        Some(div_round(self.height * self.height, self.total).clamp(1, self.height))
+    }
+
+    /// Scroll the viewport down by one wheel step, without changing the selected commit.
+    pub fn scroll_wheel_down(&mut self) {
+        self.set_offset(self.offset.saturating_add(WHEEL_SCROLL_STEP));
+    }
+
+    /// Scroll the viewport up by one wheel step, without changing the selected commit.
+    pub fn scroll_wheel_up(&mut self) {
+        self.set_offset(self.offset.saturating_sub(WHEEL_SCROLL_STEP));
+    }
+
+    /// Select the commit at the given absolute index, without scrolling the viewport.
+    ///
+    /// This is used when a row is clicked: the clicked commit is already visible.
+    pub fn select_index_without_scroll(&mut self, index: usize) {
+        if index < self.total {
+            self.selected = index;
+        }
+    }
+
+    /// The selected absolute index, the viewport offset and the viewport height.
     pub fn current_list_status(&self) -> (usize, usize, usize) {
         (self.selected, self.offset, self.height)
     }
@@ -470,12 +597,19 @@ impl<'a> CommitListState<'a> {
         self.height = height;
     }
 
-    pub fn restore_selected_row(&mut self, row: usize) {
-        let index = self.current_selected_index();
-        self.offset = index
-            .saturating_sub(row.min(self.height.saturating_sub(1)))
-            .min(self.total.saturating_sub(self.height));
-        self.selected = index - self.offset;
+    /// Restore the selected absolute index and the viewport offset recorded before a refresh.
+    pub fn restore_selected_index(&mut self, index: usize, offset: usize) {
+        self.offset = offset.min(self.max_offset());
+        self.selected = index.min(self.total.saturating_sub(1));
+    }
+
+    pub fn commit_index_of_hash(&self, commit_hash: &CommitHash) -> Option<usize> {
+        if !self.commit_hash_set.contains(commit_hash) {
+            return None;
+        }
+        self.commits
+            .iter()
+            .position(|commit_info| commit_info.commit.commit_hash == *commit_hash)
     }
 
     pub fn select_ref(&mut self, ref_name: &str) {
@@ -485,14 +619,7 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn select_commit_hash(&mut self, commit_hash: &CommitHash) {
-        if !self.commit_hash_set.contains(commit_hash) {
-            return;
-        }
-        if let Some(index) = self
-            .commits
-            .iter()
-            .position(|commit_info| commit_info.commit.commit_hash == *commit_hash)
-        {
+        if let Some(index) = self.commit_index_of_hash(commit_hash) {
             self.select_index(index);
         }
     }
@@ -741,6 +868,7 @@ impl<'a> CommitListState<'a> {
 
 pub struct CommitList<'a> {
     ctx: Rc<AppContext>,
+    scrollbar: bool,
     _marker: std::marker::PhantomData<&'a ()>,
 }
 
@@ -748,8 +876,15 @@ impl<'a> CommitList<'a> {
     pub fn new(ctx: Rc<AppContext>) -> Self {
         Self {
             ctx,
+            scrollbar: false,
             _marker: std::marker::PhantomData,
         }
+    }
+
+    /// Render the scrollbar on the right edge of the list.
+    pub fn scrollbar(mut self, scrollbar: bool) -> Self {
+        self.scrollbar = scrollbar;
+        self
     }
 }
 
@@ -759,15 +894,19 @@ impl<'a> StatefulWidget for CommitList<'a> {
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         self.update_state(area, state);
 
+        let [content_area, scrollbar_area] =
+            Layout::horizontal([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+        let list_area = if self.scrollbar { content_area } else { area };
+
         let constraints = calc_cell_widths(
-            area.width,
+            list_area.width,
             self.ctx.ui_config.list.subject_min_width,
             state.graph_area_cell_width(),
             self.ctx.ui_config.list.name_width,
             self.ctx.ui_config.list.date_width,
             &self.ctx.ui_config.list.columns,
         );
-        let chunks = Layout::horizontal(constraints).split(area);
+        let chunks = Layout::horizontal(constraints).split(list_area);
 
         for (i, col) in self.ctx.ui_config.list.columns.iter().enumerate() {
             match col {
@@ -791,12 +930,36 @@ impl<'a> StatefulWidget for CommitList<'a> {
                 }
             }
         }
+
+        if self.scrollbar {
+            self.render_scrollbar(buf, scrollbar_area, state);
+        }
     }
 }
 
 impl CommitList<'_> {
     fn update_state(&self, area: Rect, state: &mut CommitListState) {
         state.update_height(area.height as usize);
+    }
+
+    fn render_scrollbar(&self, buf: &mut Buffer, area: Rect, state: &CommitListState) {
+        if area.is_empty() {
+            return;
+        }
+        let Some(geometry) = state.scrollbar_geometry() else {
+            // The whole list is visible, so the scrollbar is not rendered
+            return;
+        };
+        for row in 0..area.height {
+            let (symbol, color) = if geometry.contains_thumb(row) {
+                ("█", self.ctx.color_theme.list_scrollbar_thumb_fg)
+            } else {
+                ("│", self.ctx.color_theme.list_scrollbar_track_fg)
+            };
+            let cell = &mut buf[(area.left(), area.top() + row)];
+            cell.set_symbol(symbol)
+                .set_style(Style::default().fg(color));
+        }
     }
 
     fn render_graph(&self, buf: &mut Buffer, area: Rect, state: &CommitListState) {
@@ -997,7 +1160,7 @@ impl CommitList<'_> {
         spans.insert(0, Span::raw(" "));
         spans.push(Span::raw(" "));
         let mut line = Line::from(spans);
-        if i == state.selected {
+        if Some(i) == state.selected_row() {
             line = line
                 .bg(self.ctx.color_theme.list_selected_bg)
                 .fg(self.ctx.color_theme.list_selected_fg);
@@ -1209,6 +1372,7 @@ mod tests {
         git::Repository,
         graph::{calc_graph, CellWidthType, GraphImageWidthMode, GraphStyle},
         protocol::ImageProtocol,
+        view::ListRefreshViewContext,
     };
 
     use super::*;
@@ -1278,7 +1442,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scrolloff_keeps_context_for_selection_and_single_row_scrolling() {
+    fn test_scrolloff_keeps_context_for_selection() {
         with_commit_list_state(&["commit"; 12], |state| {
             state.reset_height(6);
             state.scrolloff = 2;
@@ -1286,23 +1450,20 @@ mod tests {
             for _ in 0..4 {
                 state.select_next();
             }
-            assert_eq!(state.current_list_status(), (3, 1, 6));
+            assert_eq!(state.current_list_status(), (4, 1, 6));
 
             state.select_prev();
             state.select_prev();
             assert_eq!(state.current_list_status(), (2, 0, 6));
 
             state.select_index(7);
-            assert_eq!(state.current_list_status(), (2, 5, 6));
-            state.scroll_down();
-            assert_eq!(state.current_list_status(), (2, 6, 6));
-            state.scroll_up();
-            assert_eq!(state.current_list_status(), (3, 5, 6));
+            assert_eq!(state.current_list_status(), (7, 5, 6));
 
             state.select_last();
-            assert_eq!(state.current_list_status(), (5, 6, 6));
+            assert_eq!(state.current_list_status(), (11, 6, 6));
             state.select_prev();
-            assert_eq!(state.current_list_status(), (4, 6, 6));
+            assert_eq!(state.current_list_status(), (10, 6, 6));
+            assert_eq!(state.selected_row(), Some(4));
         });
     }
 
@@ -1314,11 +1475,12 @@ mod tests {
 
             state.select_next();
             state.select_next();
-            assert_eq!(state.current_list_status(), (1, 1, 2));
+            assert_eq!(state.current_list_status(), (2, 1, 2));
 
             state.select_index(6);
-            state.restore_selected_row(1);
-            assert_eq!(state.current_list_status(), (1, 5, 2));
+            state.restore_selected_index(6, 5);
+            assert_eq!(state.current_list_status(), (6, 5, 2));
+            assert_eq!(state.selected_row(), Some(1));
         });
     }
 
@@ -1329,18 +1491,18 @@ mod tests {
             state.scrolloff = 2;
 
             state.scroll_down_page();
-            assert_eq!(state.current_list_status(), (2, 8, 10));
+            assert_eq!(state.current_list_status(), (10, 8, 10));
             state.scroll_down_page();
-            assert_eq!(state.current_list_status(), (2, 18, 10));
+            assert_eq!(state.current_list_status(), (20, 18, 10));
             state.scroll_down_page();
-            assert_eq!(state.current_list_status(), (9, 20, 10));
+            assert_eq!(state.current_list_status(), (29, 20, 10));
             state.scroll_down_page();
-            assert_eq!(state.current_list_status(), (9, 20, 10));
+            assert_eq!(state.current_list_status(), (29, 20, 10));
 
             state.scroll_up_page();
-            assert_eq!(state.current_list_status(), (7, 12, 10));
+            assert_eq!(state.current_list_status(), (19, 12, 10));
             state.scroll_up_page();
-            assert_eq!(state.current_list_status(), (7, 2, 10));
+            assert_eq!(state.current_list_status(), (9, 2, 10));
             state.scroll_up_page();
             assert_eq!(state.current_list_status(), (0, 0, 10));
         });
@@ -1354,11 +1516,11 @@ mod tests {
             state.select_index(12);
 
             state.scroll_down_half();
-            assert_eq!(state.current_list_status(), (2, 15, 10));
+            assert_eq!(state.current_list_status(), (17, 15, 10));
             state.scroll_down_half();
-            assert_eq!(state.current_list_status(), (6, 16, 10));
+            assert_eq!(state.current_list_status(), (22, 16, 10));
             state.scroll_down_half();
-            assert_eq!(state.current_list_status(), (9, 16, 10));
+            assert_eq!(state.current_list_status(), (25, 16, 10));
         });
     }
 
@@ -1370,23 +1532,605 @@ mod tests {
             state.select_index(12);
 
             state.scroll_down_page();
-            assert_eq!(state.current_list_status(), (7, 15, 10));
+            assert_eq!(state.current_list_status(), (22, 15, 10));
             state.scroll_down_page();
-            assert_eq!(state.current_list_status(), (9, 15, 10));
+            assert_eq!(state.current_list_status(), (24, 15, 10));
         });
     }
 
     #[test]
-    fn test_refresh_restores_selected_row_with_scrolloff() {
+    fn test_restore_selected_index_restores_absolute_index_and_offset() {
         with_commit_list_state(&["commit"; 30], |state| {
             state.reset_height(10);
             state.scrolloff = 2;
             state.select_index(15);
-            assert_eq!(state.current_list_status(), (2, 13, 10));
+            assert_eq!(state.current_list_status(), (15, 13, 10));
 
-            state.restore_selected_row(7);
-            assert_eq!(state.current_list_status(), (7, 8, 10));
+            state.restore_selected_index(15, 8);
+            assert_eq!(state.current_list_status(), (15, 8, 10));
+            assert_eq!(state.selected_row(), Some(7));
             assert_eq!(state.current_selected_index(), 15);
+
+            // The selection may be restored out of the viewport
+            state.restore_selected_index(15, 20);
+            assert_eq!(state.current_list_status(), (15, 20, 10));
+            assert_eq!(state.selected_row(), None);
+
+            // The index and the offset are clamped to the list
+            state.restore_selected_index(100, 100);
+            assert_eq!(state.current_list_status(), (29, 20, 10));
+        });
+    }
+
+    #[test]
+    fn test_pure_scroll_does_not_change_the_selected_commit() {
+        with_commit_list_state(&["commit"; 20], |state| {
+            state.reset_height(5);
+            state.select_index(6);
+            assert_eq!(state.current_list_status(), (6, 6, 5));
+            assert_eq!(state.selected_row(), Some(0));
+
+            // Scrolling down pushes the selected commit out of the viewport
+            for _ in 0..6 {
+                state.scroll_down();
+            }
+            assert_eq!(state.current_list_status(), (6, 12, 5));
+            assert_eq!(state.selected_row(), None);
+
+            state.scroll_down();
+            assert_eq!(state.current_list_status(), (6, 13, 5));
+            assert_eq!(state.selected_row(), None);
+
+            // Scrolling up brings the same commit back into the viewport
+            for _ in 0..3 {
+                state.scroll_up();
+            }
+            assert_eq!(state.current_list_status(), (6, 10, 5));
+            assert_eq!(state.selected_row(), None);
+            for _ in 0..4 {
+                state.scroll_up();
+            }
+            assert_eq!(state.current_list_status(), (6, 6, 5));
+            assert_eq!(state.selected_row(), Some(0));
+        });
+    }
+
+    #[test]
+    fn test_pure_scroll_is_clamped_to_the_list_edges() {
+        with_commit_list_state(&["commit"; 20], |state| {
+            state.reset_height(5);
+            state.select_index(3);
+            assert_eq!(state.current_list_status(), (3, 3, 5));
+            assert_eq!(state.selected_row(), Some(0));
+
+            for _ in 0..20 {
+                state.scroll_up();
+            }
+            assert_eq!(state.current_list_status(), (3, 0, 5));
+            assert_eq!(state.selected_row(), Some(3));
+
+            for _ in 0..20 {
+                state.scroll_down();
+            }
+            assert_eq!(state.current_list_status(), (3, 15, 5));
+            assert_eq!(state.selected_row(), None);
+
+            state.set_offset(100);
+            assert_eq!(state.current_list_status(), (3, 15, 5));
+        });
+    }
+
+    #[test]
+    fn test_navigation_scrolls_the_selection_back_into_view_with_scrolloff() {
+        with_commit_list_state(&["commit"; 20], |state| {
+            state.reset_height(5);
+            state.scrolloff = 1;
+            state.select_index(6);
+            assert_eq!(state.current_list_status(), (6, 5, 5));
+            assert_eq!(state.selected_row(), Some(1));
+
+            for _ in 0..8 {
+                state.scroll_down();
+            }
+            assert_eq!(state.current_list_status(), (6, 13, 5));
+            assert_eq!(state.selected_row(), None);
+
+            // The selection is scrolled back into view, keeping the scrolloff margin above it
+            state.select_next();
+            assert_eq!(state.current_list_status(), (7, 6, 5));
+            assert_eq!(state.selected_row(), Some(1));
+
+            state.select_prev();
+            assert_eq!(state.current_list_status(), (6, 5, 5));
+            assert_eq!(state.selected_row(), Some(1));
+        });
+    }
+
+    #[test]
+    fn test_navigation_scrolls_a_selection_below_the_viewport_back_into_view() {
+        with_commit_list_state(&["commit"; 20], |state| {
+            state.reset_height(5);
+            state.select_index(15);
+            state.set_offset(0);
+            assert_eq!(state.current_list_status(), (15, 0, 5));
+            assert_eq!(state.selected_row(), None);
+
+            state.select_prev();
+            assert_eq!(state.current_list_status(), (14, 10, 5));
+            assert_eq!(state.selected_row(), Some(4));
+        });
+    }
+
+    #[test]
+    fn test_select_high_middle_low_is_relative_to_the_viewport() {
+        with_commit_list_state(&["commit"; 30], |state| {
+            state.reset_height(6);
+            state.select_index(12);
+            assert_eq!(state.current_list_status(), (12, 12, 6));
+
+            state.select_high();
+            assert_eq!(state.current_list_status(), (12, 12, 6));
+            assert_eq!(state.selected_row(), Some(0));
+
+            state.scroll_down();
+            state.scroll_down();
+            assert_eq!(state.current_list_status(), (12, 14, 6));
+
+            state.select_high();
+            assert_eq!(state.current_list_status(), (14, 14, 6));
+            state.select_middle();
+            assert_eq!(state.current_list_status(), (17, 14, 6));
+            state.select_low();
+            assert_eq!(state.current_list_status(), (19, 14, 6));
+            assert_eq!(state.selected_row(), Some(5));
+        });
+    }
+
+    #[test]
+    fn test_select_high_middle_low_with_a_list_shorter_than_the_viewport() {
+        with_commit_list_state(&["commit"; 3], |state| {
+            state.reset_height(5);
+
+            state.select_last();
+            assert_eq!(state.current_list_status(), (2, 0, 5));
+            assert_eq!(state.selected_row(), Some(2));
+
+            state.select_high();
+            assert_eq!(state.current_list_status(), (0, 0, 5));
+            state.select_middle();
+            assert_eq!(state.current_list_status(), (1, 0, 5));
+            state.select_low();
+            assert_eq!(state.current_list_status(), (2, 0, 5));
+            assert_eq!(state.selected_row(), Some(2));
+        });
+    }
+
+    #[test]
+    fn test_select_low_does_not_exceed_the_last_commit() {
+        with_commit_list_state(&["commit"; 8], |state| {
+            state.reset_height(5);
+            state.select_index(6);
+            assert_eq!(state.current_list_status(), (6, 3, 5));
+
+            state.select_low();
+            assert_eq!(state.current_list_status(), (7, 3, 5));
+            assert_eq!(state.selected_row(), Some(4));
+
+            state.select_middle();
+            assert_eq!(state.current_list_status(), (5, 3, 5));
+        });
+    }
+
+    #[test]
+    fn test_resize_keeps_the_selection_and_clamps_the_offset() {
+        with_commit_list_state(&["commit"; 20], |state| {
+            state.reset_height(10);
+            state.select_index(15);
+            assert_eq!(state.current_list_status(), (15, 10, 10));
+            assert_eq!(state.selected_row(), Some(5));
+
+            // Growing the viewport clamps the offset to the new maximum
+            state.update_height(12);
+            assert_eq!(state.current_list_status(), (15, 8, 12));
+            assert_eq!(state.selected_row(), Some(7));
+
+            // Shrinking the viewport scrolls the visible selection back into view
+            state.update_height(5);
+            assert_eq!(state.current_list_status(), (15, 11, 5));
+            assert_eq!(state.selected_row(), Some(4));
+
+            // Repeated calls with the same height do not change the state
+            state.update_height(5);
+            assert_eq!(state.current_list_status(), (15, 11, 5));
+        });
+    }
+
+    #[test]
+    fn test_resize_keeps_an_out_of_view_selection_out_of_view() {
+        with_commit_list_state(&["commit"; 20], |state| {
+            state.reset_height(5);
+            state.select_index(15);
+            state.set_offset(0);
+            assert_eq!(state.selected_row(), None);
+
+            state.update_height(3);
+            assert_eq!(state.current_list_status(), (15, 0, 3));
+            assert_eq!(state.selected_row(), None);
+        });
+    }
+
+    #[test]
+    fn test_refresh_restores_the_selected_index_and_the_offset() {
+        let context = with_commit_list_state(&["commit"; 30], |state| {
+            state.reset_height(10);
+            state.scrolloff = 2;
+            state.select_index(15);
+            assert_eq!(state.current_list_status(), (15, 13, 10));
+            ListRefreshViewContext::from(&*state)
+        });
+        assert_eq!(context.selected, 15);
+        assert_eq!(context.offset, 13);
+        assert!(!context.scroll_to_top);
+
+        with_commit_list_state(&["commit"; 30], |state| {
+            state.reset_height(10);
+            context.restore(state);
+            assert_eq!(state.current_list_status(), (15, 13, 10));
+            assert_eq!(state.selected_row(), Some(2));
+        });
+    }
+
+    #[test]
+    fn test_refresh_scrolls_to_top_when_the_list_was_at_the_top() {
+        let context = with_commit_list_state(&["commit"; 4], |state| {
+            state.reset_height(5);
+            ListRefreshViewContext::from(&*state)
+        });
+        assert!(context.scroll_to_top);
+
+        // The refreshed list has a new commit on top
+        with_commit_list_state(
+            &["new commit", "commit", "commit", "commit", "commit"],
+            |state| {
+                state.reset_height(5);
+                state.select_last();
+                context.restore(state);
+                assert_eq!(state.current_list_status(), (0, 0, 5));
+                assert_eq!(state.selected_row(), Some(0));
+                assert_eq!(state.commits[0].commit.subject, "new commit");
+            },
+        );
+    }
+
+    #[test]
+    fn test_refresh_falls_back_to_the_recorded_index_when_the_commit_is_gone() {
+        let context = with_commit_list_state(&["a", "b", "c", "d"], |state| {
+            state.reset_height(10);
+            state.select_index(2);
+            ListRefreshViewContext::from(&*state)
+        });
+
+        with_commit_list_state(&["a", "b"], |state| {
+            state.reset_height(10);
+            context.restore(state);
+            // The index is clamped to the last commit of the refreshed list
+            assert_eq!(state.current_list_status(), (1, 0, 10));
+            assert_eq!(state.selected_row(), Some(1));
+        });
+    }
+
+    #[test]
+    fn test_commit_index_of_hash() {
+        with_commit_list_state(&["a", "b", "c"], |state| {
+            let existing = CommitHash::from(format!("{:040x}", 2).as_str());
+            let missing = CommitHash::from(format!("{:040x}", 9).as_str());
+            assert_eq!(state.commit_index_of_hash(&existing), Some(1));
+            assert_eq!(state.commit_index_of_hash(&missing), None);
+        });
+    }
+
+    #[test]
+    fn test_commit_index_at_row() {
+        let list_area = Rect::new(0, 2, 80, 5);
+        with_commit_list_state(&["commit"; 20], |state| {
+            state.reset_height(list_area.height as usize);
+
+            // offset = 0
+            assert_eq!(state.commit_index_at_row(list_area, 2), Some(0));
+            assert_eq!(state.commit_index_at_row(list_area, 6), Some(4));
+
+            // rows outside the list area are ignored
+            assert_eq!(state.commit_index_at_row(list_area, 1), None);
+            assert_eq!(state.commit_index_at_row(list_area, 7), None);
+
+            // offset > 0
+            state.set_offset(5);
+            assert_eq!(state.commit_index_at_row(list_area, 2), Some(5));
+            assert_eq!(state.commit_index_at_row(list_area, 6), Some(9));
+        });
+    }
+
+    #[test]
+    fn test_commit_index_at_row_without_a_commit() {
+        let list_area = Rect::new(0, 0, 80, 5);
+
+        // rows below the last commit are ignored
+        with_commit_list_state(&["commit"; 3], |state| {
+            state.reset_height(list_area.height as usize);
+            assert_eq!(state.commit_index_at_row(list_area, 2), Some(2));
+            assert_eq!(state.commit_index_at_row(list_area, 3), None);
+            assert_eq!(state.commit_index_at_row(list_area, 4), None);
+        });
+
+        with_commit_list_state(&[], |state| {
+            state.reset_height(list_area.height as usize);
+            assert_eq!(state.commit_index_at_row(list_area, 0), None);
+        });
+    }
+
+    #[test]
+    fn test_scrollbar_geometry_is_not_shown_when_the_list_fits() {
+        with_commit_list_state(&["commit"; 5], |state| {
+            state.reset_height(5);
+            assert_eq!(state.scrollbar_geometry(), None);
+
+            state.reset_height(6);
+            assert_eq!(state.scrollbar_geometry(), None);
+
+            state.reset_height(0);
+            assert_eq!(state.scrollbar_geometry(), None);
+        });
+
+        with_commit_list_state(&[], |state| {
+            state.reset_height(5);
+            assert_eq!(state.scrollbar_geometry(), None);
+        });
+    }
+
+    #[test]
+    fn test_scrollbar_geometry_thumb_length_and_position() {
+        with_commit_list_state(&["commit"; 20], |state| {
+            state.reset_height(5);
+            // thumb_len = round(5 * 5 / 20) = 1
+            assert_eq!(
+                state.scrollbar_geometry(),
+                Some(ScrollbarGeometry {
+                    thumb_start: 0,
+                    thumb_len: 1,
+                })
+            );
+
+            state.set_offset(7);
+            assert_eq!(
+                state.scrollbar_geometry(),
+                Some(ScrollbarGeometry {
+                    thumb_start: 2,
+                    thumb_len: 1,
+                })
+            );
+
+            state.set_offset(15);
+            assert_eq!(
+                state.scrollbar_geometry(),
+                Some(ScrollbarGeometry {
+                    thumb_start: 4,
+                    thumb_len: 1,
+                })
+            );
+        });
+
+        // one commit beyond the viewport
+        with_commit_list_state(&["commit"; 6], |state| {
+            state.reset_height(5);
+            // thumb_len = round(5 * 5 / 6) = 4
+            assert_eq!(
+                state.scrollbar_geometry(),
+                Some(ScrollbarGeometry {
+                    thumb_start: 0,
+                    thumb_len: 4,
+                })
+            );
+
+            state.set_offset(1);
+            assert_eq!(
+                state.scrollbar_geometry(),
+                Some(ScrollbarGeometry {
+                    thumb_start: 1,
+                    thumb_len: 4,
+                })
+            );
+        });
+
+        // the thumb always occupies at least one row
+        with_commit_list_state(&["commit"; 100], |state| {
+            state.reset_height(5);
+            // thumb_len = round(5 * 5 / 100) = 0 -> 1
+            assert_eq!(
+                state.scrollbar_geometry(),
+                Some(ScrollbarGeometry {
+                    thumb_start: 0,
+                    thumb_len: 1,
+                })
+            );
+        });
+    }
+
+    #[test]
+    fn test_scrollbar_geometry_with_a_single_visible_row() {
+        with_commit_list_state(&["commit"; 3], |state| {
+            state.reset_height(1);
+            // The thumb occupies the whole track, so there is no position information
+            assert_eq!(
+                state.scrollbar_geometry(),
+                Some(ScrollbarGeometry {
+                    thumb_start: 0,
+                    thumb_len: 1,
+                })
+            );
+            assert_eq!(state.offset_for_thumb_start(0), 0);
+        });
+    }
+
+    #[test]
+    fn test_scrollbar_offset_round_trip() {
+        let cases = [
+            (20, 5), // thumb_len = 1
+            (6, 5),  // thumb_len = 4
+            (30, 7), // thumb_len = 2
+            (100, 20),
+        ];
+        for (total, height) in cases {
+            let subjects = vec!["commit"; total];
+            with_commit_list_state(&subjects, |state| {
+                state.reset_height(height);
+                let geometry = state.scrollbar_geometry().unwrap();
+                let max_start = height - geometry.thumb_len as usize;
+                let max_offset = total - height;
+
+                // thumb position -> offset -> thumb position
+                for thumb_start in 0..=max_start {
+                    let offset = state.offset_for_thumb_start(thumb_start as u16);
+                    state.set_offset(offset);
+                    assert_eq!(
+                        state.scrollbar_geometry().unwrap().thumb_start,
+                        thumb_start as u16,
+                        "total={total} height={height} thumb_start={thumb_start}"
+                    );
+                }
+
+                // offset -> thumb position -> offset (within the granularity of the scrollbar)
+                let granularity = max_offset.div_ceil(max_start.max(1));
+                for offset in 0..=max_offset {
+                    state.set_offset(offset);
+                    let thumb_start = state.scrollbar_geometry().unwrap().thumb_start;
+                    let restored = state.offset_for_thumb_start(thumb_start);
+                    assert!(
+                        restored.abs_diff(offset) <= granularity,
+                        "total={total} height={height} offset={offset} restored={restored}"
+                    );
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn test_scrollbar_grab_offset() {
+        let geometry = ScrollbarGeometry {
+            thumb_start: 3,
+            thumb_len: 2,
+        };
+        assert!(!geometry.contains_thumb(2));
+        assert!(geometry.contains_thumb(3));
+        assert!(geometry.contains_thumb(4));
+        assert!(!geometry.contains_thumb(5));
+
+        // the cursor keeps its position within the thumb
+        assert_eq!(geometry.grab_offset(3), 0);
+        assert_eq!(geometry.grab_offset(4), 1);
+        // the thumb jumps to the pressed row when the track is pressed
+        assert_eq!(geometry.grab_offset(1), 0);
+        assert_eq!(geometry.grab_offset(6), 0);
+    }
+
+    #[test]
+    fn test_scrollbar_drag_clamps_to_the_list_edges() {
+        with_commit_list_state(&["commit"; 20], |state| {
+            state.reset_height(5);
+            let max_offset = 15;
+
+            assert_eq!(state.offset_for_thumb_start(0), 0);
+            assert_eq!(state.offset_for_thumb_start(u16::MAX), max_offset);
+
+            state.set_offset(state.offset_for_thumb_start(u16::MAX));
+            assert_eq!(state.current_list_status(), (0, max_offset, 5));
+        });
+
+        // nothing to scroll
+        with_commit_list_state(&["commit"; 5], |state| {
+            state.reset_height(5);
+            assert_eq!(state.offset_for_thumb_start(0), 0);
+            assert_eq!(state.offset_for_thumb_start(u16::MAX), 0);
+
+            state.set_offset(state.offset_for_thumb_start(u16::MAX));
+            assert_eq!(state.current_list_status(), (0, 0, 5));
+        });
+    }
+
+    #[test]
+    fn test_wheel_scroll_does_not_change_the_selected_commit() {
+        with_commit_list_state(&["commit"; 20], |state| {
+            state.reset_height(5);
+            state.select_index(7);
+            assert_eq!(state.current_list_status(), (7, 7, 5));
+
+            // one wheel event scrolls three rows
+            state.scroll_wheel_down();
+            assert_eq!(state.current_list_status(), (7, 10, 5));
+            assert_eq!(state.selected_row(), None);
+            state.scroll_wheel_down();
+            assert_eq!(state.current_list_status(), (7, 13, 5));
+
+            // clamped to the end of the list
+            state.scroll_wheel_down();
+            assert_eq!(state.current_list_status(), (7, 15, 5));
+            state.scroll_wheel_down();
+            assert_eq!(state.current_list_status(), (7, 15, 5));
+
+            // and to the top of the list
+            state.scroll_wheel_up();
+            assert_eq!(state.current_list_status(), (7, 12, 5));
+            for _ in 0..10 {
+                state.scroll_wheel_up();
+            }
+            assert_eq!(state.current_list_status(), (7, 0, 5));
+            assert_eq!(state.selected_row(), None);
+
+            // scrolling back brings the same commit into view
+            state.scroll_wheel_down();
+            assert_eq!(state.current_list_status(), (7, 3, 5));
+            assert_eq!(state.selected_row(), Some(4));
+        });
+    }
+
+    #[test]
+    fn test_scrollbar_drag_does_not_change_the_selected_commit() {
+        with_commit_list_state(&["commit"; 20], |state| {
+            state.reset_height(5);
+            state.select_index(2);
+            assert_eq!(state.current_list_status(), (2, 2, 5));
+
+            // drag the thumb to the bottom of the track
+            let geometry = state.scrollbar_geometry().unwrap();
+            let thumb_start = 5 - geometry.thumb_len;
+            state.set_offset(state.offset_for_thumb_start(thumb_start));
+            assert_eq!(state.current_list_status(), (2, 15, 5));
+            assert_eq!(state.selected_row(), None);
+
+            // drag the thumb back to the top of the track
+            state.set_offset(state.offset_for_thumb_start(0));
+            assert_eq!(state.current_list_status(), (2, 0, 5));
+            assert_eq!(state.selected_row(), Some(2));
+        });
+    }
+
+    #[test]
+    fn test_selecting_by_click_does_not_scroll_the_viewport() {
+        with_commit_list_state(&["commit"; 20], |state| {
+            state.reset_height(5);
+            state.set_offset(5);
+            assert_eq!(state.current_list_status(), (0, 5, 5));
+
+            state.select_index_without_scroll(9);
+            assert_eq!(state.current_list_status(), (9, 5, 5));
+            assert_eq!(state.selected_row(), Some(4));
+
+            state.select_index_without_scroll(5);
+            assert_eq!(state.current_list_status(), (5, 5, 5));
+            assert_eq!(state.selected_row(), Some(0));
+
+            // out of range indexes are ignored
+            state.select_index_without_scroll(20);
+            assert_eq!(state.current_list_status(), (5, 5, 5));
         });
     }
 
@@ -1395,12 +2139,12 @@ mod tests {
         with_commit_list_state(&["commit"; 25], |state| {
             state.reset_height(10);
             state.select_index(12);
-            assert_eq!(state.current_list_status(), (0, 12, 10));
+            assert_eq!(state.current_list_status(), (12, 12, 10));
 
             state.scroll_down_page();
-            assert_eq!(state.current_list_status(), (7, 15, 10));
+            assert_eq!(state.current_list_status(), (22, 15, 10));
             state.scroll_down_page();
-            assert_eq!(state.current_list_status(), (9, 15, 10));
+            assert_eq!(state.current_list_status(), (24, 15, 10));
         });
     }
 
@@ -1491,11 +2235,11 @@ mod tests {
             state.reset_height(2);
             state.select_index(2);
             state.scroll_up();
-            assert_eq!(state.current_list_status(), (1, 1, 2));
+            assert_eq!(state.current_list_status(), (2, 1, 2));
 
             state.restore_search(&context);
 
-            assert_eq!(state.current_list_status(), (1, 1, 2));
+            assert_eq!(state.current_list_status(), (2, 1, 2));
             assert_eq!(
                 state.matched_query_string(),
                 Some(("Match 1 of 1 (query: \"fix\")".into(), true))

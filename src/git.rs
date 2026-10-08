@@ -213,6 +213,15 @@ impl Repository {
         &self.head
     }
 
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Whether the repository has no working tree, in which case write actions are not available.
+    pub fn is_bare(&self) -> bool {
+        is_bare_repository(&self.path)
+    }
+
     pub fn commit_detail(&self, commit_hash: &CommitHash) -> (Commit, Vec<FileChange>) {
         let commit = self.commit(commit_hash).unwrap().clone();
         let changes = if commit.parent_commit_hashes.is_empty() {
@@ -222,6 +231,22 @@ impl Repository {
         };
         (commit, changes)
     }
+}
+
+/// The names of the remotes of the repository, or an empty list when they cannot be loaded.
+pub fn load_remotes(path: &Path) -> Vec<String> {
+    let Ok(output) = Command::new("git").arg("remote").current_dir(path).output() else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 fn check_git_repository(path: &Path) -> Result<()> {

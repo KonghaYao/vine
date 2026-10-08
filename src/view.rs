@@ -1,3 +1,4 @@
+mod action_menu;
 mod views;
 
 mod detail;

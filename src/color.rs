@@ -41,6 +41,10 @@ pub struct ColorTheme {
     pub list_match_fg: RatatuiColor,
     #[default(RatatuiColor::Yellow)]
     pub list_match_bg: RatatuiColor,
+    #[default(RatatuiColor::DarkGray)]
+    pub list_scrollbar_thumb_fg: RatatuiColor,
+    #[default(RatatuiColor::DarkGray)]
+    pub list_scrollbar_track_fg: RatatuiColor,
 
     #[default(RatatuiColor::Reset)]
     pub detail_label_fg: RatatuiColor,

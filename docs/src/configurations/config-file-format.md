@@ -27,6 +27,7 @@ clipboard = "auto"
 
 [ui.common]
 cursor_type = "native"
+mouse = true
 
 [ui.list]
 scrolloff = 0
@@ -47,6 +48,10 @@ height = 20
 
 [ui.refs]
 width = 26
+
+[actions]
+enable = true
+confirm_destructive = true
 
 [graph]
 row_image_width = "compact"
@@ -80,6 +85,8 @@ list_hash_fg = "yellow"
 list_date_fg = "magenta"
 list_match_fg = "black"
 list_match_bg = "yellow"
+list_scrollbar_thumb_fg = "dark-gray"
+list_scrollbar_track_fg = "dark-gray"
 detail_label_fg = "reset"
 detail_name_fg = "reset"
 detail_date_fg = "reset"
@@ -280,6 +287,16 @@ The type of a cursor to display in the input.
   - `{ virtual = "|" }`: Use a virtual cursor with the specified string.
     - value: `string` - The string to display as the virtual cursor.
 
+### `ui.common.mouse`
+
+Whether to enable mouse support.
+
+- type: `boolean`
+- default: `true`
+
+When enabled, the terminal mouse is captured by the application, so selecting and copying text with the terminal itself requires holding `Shift` (in most terminals).
+Set this to `false` to use the terminal native mouse behavior instead; mouse operations are disabled while the application runs.
+
 ### `ui.list.scrolloff`
 
 The minimum number of visible rows to keep above and below the selected commit where possible.
@@ -376,6 +393,28 @@ The width of a refs list area.
 
 - type: `u16`
 - default: `26`
+
+### `actions.enable`
+
+Whether the action menu is available.
+
+- type: `boolean`
+- default: `true`
+
+When disabled, the action menu cannot be opened and the application works as a read-only commit
+graph browser.
+
+Actions are executed by running `git` commands in the repository.
+
+### `actions.confirm_destructive`
+
+Whether destructive actions are confirmed before they are executed.
+
+- type: `boolean`
+- default: `true`
+
+Destructive actions (deleting branches and tags, dropping stashes, rebasing, and `reset --hard`)
+ask for a confirmation (`y`/`n`) when this is enabled.
 
 ### `graph.color.branches`
 

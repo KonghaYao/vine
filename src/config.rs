@@ -27,6 +27,7 @@ pub fn load() -> Result<(
     CoreConfig,
     UiConfig,
     GraphConfig,
+    ActionsConfig,
     ColorTheme,
     Option<KeyBind>,
 )> {
@@ -60,6 +61,7 @@ pub fn load() -> Result<(
         config.core,
         config.ui,
         config.graph,
+        config.actions,
         config.color,
         config.keybind,
     ))
@@ -95,6 +97,9 @@ struct Config {
     #[garde(dive)]
     #[nested]
     graph: GraphConfig,
+    #[garde(dive)]
+    #[nested]
+    actions: ActionsConfig,
     #[garde(skip)]
     #[nested]
     color: ColorTheme,
@@ -297,6 +302,8 @@ pub struct UiConfig {
 pub struct UiCommonConfig {
     #[default(CursorType::Native)]
     pub cursor_type: CursorType,
+    #[default = true]
+    pub mouse: bool,
 }
 
 // Config values are lowercase; PascalCase aliases are kept for backward compatibility.
@@ -405,6 +412,18 @@ pub struct UiRefsConfig {
     pub width: u16,
 }
 
+/// Settings for the git actions executed from the action menu.
+#[optional(derives = [Deserialize])]
+#[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
+pub struct ActionsConfig {
+    #[garde(skip)]
+    #[default = true]
+    pub enable: bool,
+    #[garde(skip)]
+    #[default = true]
+    pub confirm_destructive: bool,
+}
+
 #[optional(derives = [Deserialize])]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
 pub struct GraphConfig {
@@ -485,6 +504,7 @@ mod tests {
             ui: UiConfig {
                 common: UiCommonConfig {
                     cursor_type: CursorType::Native,
+                    mouse: true,
                 },
                 list: UiListConfig {
                     scrolloff: 0,
@@ -525,6 +545,10 @@ mod tests {
                     background: "#00000000".into(),
                 },
             },
+            actions: ActionsConfig {
+                enable: true,
+                confirm_destructive: true,
+            },
             color: ColorTheme::default(),
             keybind: None,
         };
@@ -554,6 +578,7 @@ mod tests {
             tab_width = 2
             [ui.common]
             cursor_type = { virtual = "|" }
+            mouse = false
             [ui.list]
             scrolloff = 3
             columns = ["date", "subject", "hash", "graph"]
@@ -570,6 +595,9 @@ mod tests {
             height = 30
             [ui.refs]
             width = 40
+            [actions]
+            enable = false
+            confirm_destructive = false
             [graph]
             row_image_width = "fixed"
             [graph.color]
@@ -646,6 +674,7 @@ mod tests {
             ui: UiConfig {
                 common: UiCommonConfig {
                     cursor_type: CursorType::Virtual("|".into()),
+                    mouse: false,
                 },
                 list: UiListConfig {
                     scrolloff: 3,
@@ -676,6 +705,10 @@ mod tests {
                     edge: "#000000".into(),
                     background: "#ffffff".into(),
                 },
+            },
+            actions: ActionsConfig {
+                enable: false,
+                confirm_destructive: false,
             },
             color: ColorTheme::default(),
             keybind: None,
@@ -733,6 +766,7 @@ mod tests {
             ui: UiConfig {
                 common: UiCommonConfig {
                     cursor_type: CursorType::Native,
+                    mouse: true,
                 },
                 list: UiListConfig {
                     scrolloff: 0,
@@ -773,10 +807,50 @@ mod tests {
                     background: "#00000000".into(),
                 },
             },
+            actions: ActionsConfig {
+                enable: true,
+                confirm_destructive: true,
+            },
             color: ColorTheme::default(),
             keybind: None,
         };
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_config_ui_common_mouse_defaults_to_true() {
+        let config: Config = toml::from_str::<OptionalConfig>("").unwrap().into();
+        assert!(config.ui.common.mouse);
+    }
+
+    #[test]
+    fn test_config_ui_common_mouse_can_be_disabled() {
+        let toml = r#"
+            [ui.common]
+            mouse = false
+        "#;
+        let config: Config = toml::from_str::<OptionalConfig>(toml).unwrap().into();
+        assert!(!config.ui.common.mouse);
+        assert_eq!(config.ui.common.cursor_type, CursorType::Native);
+    }
+
+    #[test]
+    fn test_config_actions_defaults() {
+        let config: Config = toml::from_str::<OptionalConfig>("").unwrap().into();
+        assert!(config.actions.enable);
+        assert!(config.actions.confirm_destructive);
+    }
+
+    #[test]
+    fn test_config_actions_can_be_disabled() {
+        let toml = r#"
+            [actions]
+            enable = false
+            confirm_destructive = false
+        "#;
+        let config: Config = toml::from_str::<OptionalConfig>(toml).unwrap().into();
+        assert!(!config.actions.enable);
+        assert!(!config.actions.confirm_destructive);
     }
 
     #[test]

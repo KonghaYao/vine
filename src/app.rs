@@ -1,6 +1,7 @@
 use std::{
     io::{self, Write},
     rc::Rc,
+    thread,
 };
 
 use ratatui::{
@@ -15,12 +16,16 @@ use rustc_hash::FxHashMap;
 
 use crate::{
     color::{ColorTheme, GraphColorSet},
-    config::{CoreConfig, CursorType, UiConfig, UserCommand, UserCommandType},
+    config::{ActionsConfig, CoreConfig, CursorType, UiConfig, UserCommand, UserCommandType},
     event::{AppEvent, EventController, UserEvent, UserEventWithCount},
     external::{
         copy_to_clipboard, exec_user_command, exec_user_command_suspend, ExternalCommandParameters,
     },
-    git::{Commit, FileChange, Head, Ref, Repository},
+    git::{self, Commit, FileChange, Head, Ref, Repository},
+    git_action::{
+        self, action_feedback, commit_menu_entries, ref_menu_entries, ActionFeedback,
+        ActionMenuContext, ActionMenuEntry, GitAction,
+    },
     graph::GraphImageManager,
     keybind::KeyBind,
     protocol::ImageProtocol,
@@ -39,6 +44,7 @@ enum StatusLine {
         metadata: String,
     },
     Transient(String),
+    Loading(String),
     SearchResult {
         message: String,
         options: String,
@@ -70,6 +76,7 @@ pub struct AppContext {
     pub keybind: KeyBind,
     pub core_config: CoreConfig,
     pub ui_config: UiConfig,
+    pub actions_config: ActionsConfig,
     pub color_theme: ColorTheme,
     pub image_protocol: ImageProtocol,
 }
@@ -86,6 +93,8 @@ pub struct App<'a> {
     repository: &'a Repository,
     view: View<'a>,
     app_status: AppStatus,
+    /// Whether a remote action is running in the background.
+    remote_action_in_progress: bool,
     ctx: Rc<AppContext>,
     ec: &'a EventController,
 }
@@ -144,6 +153,7 @@ impl<'a> App<'a> {
             repository,
             view,
             app_status: AppStatus::default(),
+            remote_action_in_progress: false,
             ctx,
             ec,
         };
@@ -173,7 +183,7 @@ impl App<'_> {
             match self.ec.recv() {
                 AppEvent::Key(key) => {
                     match self.app_status.status_line {
-                        StatusLine::None | StatusLine::Input { .. } => {
+                        StatusLine::None | StatusLine::Input { .. } | StatusLine::Loading(_) => {
                             // do nothing
                         }
                         StatusLine::Transient(_)
@@ -212,7 +222,9 @@ impl App<'_> {
                             self.app_status.numeric_prefix.clear();
                         }
                         None => {
-                            if let StatusLine::Input { .. } = self.app_status.status_line {
+                            if matches!(self.app_status.status_line, StatusLine::Input { .. })
+                                || self.view.wants_raw_key_events()
+                            {
                                 // In input mode, pass all key events to the view
                                 // fixme: currently, the only thing that processes key_event is searching the list,
                                 //        so this probably works, but it's not the right process...
@@ -231,6 +243,17 @@ impl App<'_> {
                             }
                         }
                     }
+                }
+                AppEvent::Mouse(mouse) => {
+                    // Ignore mouse events when the mouse is disabled by the configuration,
+                    // or while the search query is being entered
+                    if !self.ctx.ui_config.common.mouse
+                        || matches!(self.app_status.status_line, StatusLine::Input { .. })
+                        || self.view.ignores_mouse_event()
+                    {
+                        continue;
+                    }
+                    self.view.handle_mouse_event(mouse);
                 }
                 AppEvent::Resize(w, h) => {
                     let _ = (w, h);
@@ -260,6 +283,24 @@ impl App<'_> {
                 }
                 AppEvent::CloseRefs => {
                     self.close_refs();
+                }
+                AppEvent::OpenActions => {
+                    self.open_actions();
+                }
+                AppEvent::CloseActions => {
+                    self.close_actions();
+                }
+                AppEvent::ExecuteGitAction(action) => {
+                    self.execute_git_action(*action);
+                }
+                AppEvent::RemoteActionFinished { action, result } => {
+                    self.remote_action_in_progress = false;
+                    self.clear_status_line();
+                    self.handle_action_result(&action, result);
+                }
+                AppEvent::OpenActionOutput(output) => {
+                    self.clear_image(Some(terminal))?;
+                    self.open_action_output(output);
                 }
                 AppEvent::OpenHelp => {
                     self.clear_image(None)?;
@@ -384,6 +425,9 @@ impl App<'_> {
                 Style::default().fg(self.ctx.color_theme.status_input_transient_fg),
                 area.width,
             ),
+            StatusLine::Loading(msg) => Line::raw(msg)
+                .add_modifier(Modifier::BOLD)
+                .fg(self.ctx.color_theme.status_info_fg),
             StatusLine::Transient(msg) => {
                 let msg_w = console::measure_text_width(msg.as_str());
                 let pad_w = (area.width as usize).saturating_sub(msg_w + 2 /* pad */);
@@ -560,7 +604,7 @@ impl App<'_> {
                 self.view = View::of_user_command(
                     commit_list_state,
                     output,
-                    user_command_number,
+                    Some(user_command_number),
                     self.ctx.clone(),
                     self.ec.sender(),
                 );
@@ -664,6 +708,165 @@ impl App<'_> {
         if let View::Help(ref mut view) = self.view {
             self.view = view.take_before_view();
         }
+    }
+
+    fn open_actions(&mut self) {
+        if !self.ctx.actions_config.enable || matches!(self.view, View::ActionMenu(_)) {
+            return;
+        }
+        let Some((name, entries)) = self.action_menu_contents() else {
+            return;
+        };
+        if entries.is_empty() {
+            self.ec.send(AppEvent::NotifyInfo(format!(
+                "No actions available for {name}"
+            )));
+            return;
+        }
+        let refs = self.repository.all_refs().into_iter().cloned().collect();
+        let before = std::mem::take(&mut self.view);
+        self.view = View::of_action_menu(
+            before,
+            format!("Actions - {name}"),
+            entries,
+            refs,
+            self.ctx.clone(),
+            self.ec.sender(),
+        );
+    }
+
+    /// The name of the target of the action menu for the current view, and the menu entries.
+    fn action_menu_contents(&self) -> Option<(String, Vec<ActionMenuEntry>)> {
+        let remotes = git::load_remotes(self.repository.path());
+        let current_branch = match self.repository.head() {
+            Head::Branch { name } => Some(name.as_str()),
+            Head::Detached { .. } | Head::None => None,
+        };
+        let menu_context = ActionMenuContext {
+            // Write actions are not available in a bare repository
+            writable: !self.repository.is_bare(),
+            remotes: &remotes,
+            current_branch,
+        };
+        match &self.view {
+            View::List(view) => {
+                self.commit_action_menu_contents(view.as_list_state(), &menu_context)
+            }
+            View::Detail(view) => {
+                self.commit_action_menu_contents(view.as_list_state(), &menu_context)
+            }
+            View::UserCommand(view) => {
+                self.commit_action_menu_contents(view.as_list_state(), &menu_context)
+            }
+            View::Refs(view) => {
+                let name = view.selected_ref_name()?;
+                let r = self
+                    .repository
+                    .all_refs()
+                    .into_iter()
+                    .find(|r| r.name() == name)?
+                    .clone();
+                let entries = ref_menu_entries(&r, &menu_context);
+                Some((r.name().into(), entries))
+            }
+            _ => None,
+        }
+    }
+
+    fn commit_action_menu_contents(
+        &self,
+        list_state: &CommitListState,
+        menu_context: &ActionMenuContext,
+    ) -> Option<(String, Vec<ActionMenuEntry>)> {
+        let commit_hash = list_state.selected_commit_hash().clone();
+        let refs: Vec<Ref> = self
+            .repository
+            .refs(&commit_hash)
+            .into_iter()
+            .cloned()
+            .collect();
+        let entries = commit_menu_entries(
+            &commit_hash,
+            &refs,
+            &self.ctx.core_config.user_command.commands,
+            menu_context,
+        );
+        Some((
+            format!("Actions - {}", commit_hash.as_short_hash()),
+            entries,
+        ))
+    }
+
+    fn close_actions(&mut self) {
+        if let View::ActionMenu(ref mut view) = self.view {
+            self.view = view.take_before_view();
+        }
+    }
+
+    fn execute_git_action(&mut self, action: GitAction) {
+        if action.is_remote() {
+            self.execute_remote_action(action);
+            return;
+        }
+        let result = git_action::execute_git_action(&action, self.repository.path());
+        self.handle_action_result(&action, result);
+    }
+
+    /// Runs a remote action in a background thread, so that the application keeps responding.
+    ///
+    /// The result is sent back to the application as an [`AppEvent::RemoteActionFinished`] event.
+    fn execute_remote_action(&mut self, action: GitAction) {
+        if self.remote_action_in_progress {
+            self.ec.send(AppEvent::NotifyInfo(
+                "A remote operation is already running".into(),
+            ));
+            return;
+        }
+        self.remote_action_in_progress = true;
+        self.app_status.status_line = StatusLine::Loading(action.progress_message());
+
+        let tx = self.ec.sender();
+        let path = self.repository.path().to_path_buf();
+        thread::spawn(move || {
+            let result = git_action::execute_git_action(&action, &path);
+            tx.send_if_running(AppEvent::RemoteActionFinished {
+                action: Box::new(action),
+                result,
+            });
+        });
+    }
+
+    fn handle_action_result(&mut self, action: &GitAction, result: Result<String, String>) {
+        match action_feedback(action, result) {
+            ActionFeedback::Success { summary, output } => {
+                // The repository is reloaded after the action, so the events are sent in the
+                // order they should be handled by the reloaded application.
+                self.view.refresh();
+                if let Some(output) = output {
+                    self.ec.send(AppEvent::OpenActionOutput(output));
+                }
+                self.ec.send(AppEvent::NotifySuccess(summary));
+            }
+            ActionFeedback::Error { message } => {
+                self.ec.send(AppEvent::NotifyError(message));
+            }
+        }
+    }
+
+    fn open_action_output(&mut self, output: String) {
+        let commit_list_state = match self.view {
+            View::List(ref mut view) => view.take_list_state(),
+            View::Detail(ref mut view) => view.take_list_state(),
+            View::UserCommand(ref mut view) => view.take_list_state(),
+            View::Refs(ref mut view) => view.take_list_state(),
+            _ => return,
+        };
+        self.view = View::of_action_output(
+            commit_list_state,
+            output,
+            self.ctx.clone(),
+            self.ec.sender(),
+        );
     }
 
     fn select_older_commit(&mut self) {

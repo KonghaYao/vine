@@ -1,18 +1,30 @@
 use std::rc::Rc;
 
-use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
+use ratatui::{
+    crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind},
+    layout::Rect,
+    Frame,
+};
 
 use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
-    git::CommitHash,
     view::{ListRefreshViewContext, RefreshViewContext},
     widget::commit_list::{CommitList, CommitListState, SearchState},
 };
 
+/// A scrollbar drag in progress.
+#[derive(Debug, Clone, Copy)]
+struct ScrollbarDrag {
+    grab_offset: u16,
+}
+
 #[derive(Debug)]
 pub struct ListView<'a> {
     commit_list_state: Option<CommitListState<'a>>,
+
+    list_area: Rect,
+    dragging: Option<ScrollbarDrag>,
 
     ctx: Rc<AppContext>,
     tx: Sender,
@@ -26,6 +38,8 @@ impl<'a> ListView<'a> {
     ) -> ListView<'a> {
         ListView {
             commit_list_state: Some(commit_list_state),
+            list_area: Rect::default(),
+            dragging: None,
             ctx,
             tx,
         }
@@ -165,6 +179,9 @@ impl<'a> ListView<'a> {
                 UserEvent::RefList => {
                     self.tx.send(AppEvent::OpenRefs);
                 }
+                UserEvent::Actions => {
+                    self.tx.send(AppEvent::OpenActions);
+                }
                 UserEvent::Refresh => {
                     self.refresh();
                 }
@@ -188,12 +205,39 @@ impl<'a> ListView<'a> {
         }
     }
 
+    pub fn handle_mouse_event(&mut self, mouse: MouseEvent) {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.handle_left_click(mouse.column, mouse.row)
+            }
+            MouseEventKind::Drag(MouseButton::Left) => self.handle_left_drag(mouse.row),
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.dragging = None;
+            }
+            MouseEventKind::Down(MouseButton::Right) => {
+                // The menu is opened for the commit under the cursor
+                if let Some(index) = self
+                    .as_list_state()
+                    .commit_index_at_row(self.list_area, mouse.row)
+                {
+                    self.as_mut_list_state().select_index_without_scroll(index);
+                }
+                self.tx.send(AppEvent::OpenActions);
+            }
+            MouseEventKind::ScrollDown => self.as_mut_list_state().scroll_wheel_down(),
+            MouseEventKind::ScrollUp => self.as_mut_list_state().scroll_wheel_up(),
+            _ => {}
+        }
+    }
+
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
-        let commit_list = CommitList::new(self.ctx.clone());
+        self.list_area = area;
+        let commit_list = CommitList::new(self.ctx.clone()).scrollbar(true);
         f.render_stateful_widget(commit_list, area, self.as_mut_list_state());
     }
 
     pub fn update_layout(&mut self, area: Rect) {
+        self.list_area = area;
         self.as_mut_list_state().update_height(area.height as usize);
     }
 
@@ -205,6 +249,66 @@ impl<'a> ListView<'a> {
 impl<'a> ListView<'a> {
     pub fn take_list_state(&mut self) -> CommitListState<'a> {
         self.commit_list_state.take().unwrap()
+    }
+
+    /// Select the commit on the clicked row, or handle the click on the scrollbar.
+    fn handle_left_click(&mut self, column: u16, row: u16) {
+        // A new press always ends a previous drag
+        self.dragging = None;
+        if let Some(scrollbar_area) = self.scrollbar_area() {
+            if column == scrollbar_area.left()
+                && row >= scrollbar_area.top()
+                && row < scrollbar_area.bottom()
+                && self.start_scrollbar_drag(row - scrollbar_area.top())
+            {
+                return;
+            }
+        }
+        // Clicking a row selects that commit; the viewport does not move
+        if let Some(index) = self
+            .as_list_state()
+            .commit_index_at_row(self.list_area, row)
+        {
+            self.as_mut_list_state().select_index_without_scroll(index);
+        }
+    }
+
+    /// Jump the thumb to the clicked row and start dragging it.
+    ///
+    /// Returns whether the click was handled by the scrollbar.
+    fn start_scrollbar_drag(&mut self, bar_row: u16) -> bool {
+        let Some(geometry) = self.as_list_state().scrollbar_geometry() else {
+            // The whole list is visible, so the scrollbar is not shown
+            return false;
+        };
+        let grab_offset = geometry.grab_offset(bar_row);
+        let thumb_start = bar_row.saturating_sub(grab_offset);
+        let state = self.as_mut_list_state();
+        state.set_offset(state.offset_for_thumb_start(thumb_start));
+        self.dragging = Some(ScrollbarDrag { grab_offset });
+        true
+    }
+
+    fn handle_left_drag(&mut self, row: u16) {
+        let Some(drag) = self.dragging else {
+            return;
+        };
+        let Some(scrollbar_area) = self.scrollbar_area() else {
+            return;
+        };
+        // The thumb follows the cursor along the track, so positions beyond the ends are clamped
+        let bar_row =
+            row.clamp(scrollbar_area.top(), scrollbar_area.bottom() - 1) - scrollbar_area.top();
+        let thumb_start = bar_row.saturating_sub(drag.grab_offset);
+        let state = self.as_mut_list_state();
+        state.set_offset(state.offset_for_thumb_start(thumb_start));
+    }
+
+    /// The scrollbar column of the list area, where the mouse is handled by the scrollbar.
+    fn scrollbar_area(&self) -> Option<Rect> {
+        let area = self.list_area;
+        (area.width > 0 && area.height > 0)
+            .then(|| Rect::new(area.right() - 1, area.y, 1, area.height))
     }
 
     fn as_mut_list_state(&mut self) -> &mut CommitListState<'a> {
@@ -288,25 +392,6 @@ impl<'a> ListView<'a> {
     }
 
     pub fn reset_commit_list_with(&mut self, list_context: &ListRefreshViewContext) {
-        let ListRefreshViewContext {
-            commit_hash,
-            selected,
-            height,
-            scroll_to_top,
-            search_options,
-            search_context,
-        } = list_context;
-        let list_state = self.as_mut_list_state();
-        list_state.restore_search_options(*search_options);
-        list_state.reset_height(*height);
-        if *scroll_to_top {
-            list_state.select_first();
-        } else {
-            list_state.select_commit_hash(&CommitHash::from(commit_hash.as_str()));
-            list_state.restore_selected_row(*selected);
-        }
-        if let Some(search_context) = search_context {
-            list_state.restore_search(search_context);
-        }
+        list_context.restore(self.as_mut_list_state());
     }
 }
