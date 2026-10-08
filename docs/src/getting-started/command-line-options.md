@@ -26,11 +26,11 @@ _Possible values:_ `auto`, `iterm`, `kitty`, `kitty-unicode`, `ascii`
   3. Otherwise, the iTerm2 inline images protocol is used if `TERM_PROGRAM` is `iTerm.app`, `WezTerm`, `mintty`, or `vscode`, or if `LC_TERMINAL=iTerm2`.
   4. Otherwise, the ASCII graph is used.
 
-Without this option, `$SERIE_PROTOCOL`, and the `protocol` config option, the `ascii` graph is used in any terminal: an image protocol is never selected implicitly, and `auto` has to be specified explicitly to let Serie pick one from the terminal environment.
-The mode can also be forced with the `$SERIE_PROTOCOL` environment variable, e.g. `SERIE_PROTOCOL=kitty`, which is useful when the automatic detection does not fit the environment (ssh sessions, unknown terminal emulators, ...).
+Without this option, `$VINE_PROTOCOL`, and the `protocol` config option, the `ascii` graph is used in any terminal: an image protocol is never selected implicitly, and `auto` has to be specified explicitly to let Vine pick one from the terminal environment.
+The mode can also be forced with the `$VINE_PROTOCOL` environment variable, e.g. `VINE_PROTOCOL=kitty`, which is useful when the automatic detection does not fit the environment (ssh sessions, unknown terminal emulators, ...).
 This option takes precedence over it, and it takes precedence over the `protocol` config option.
 
-The mode can also be forced with the `$SERIE_PROTOCOL` environment variable, e.g. `SERIE_PROTOCOL=ascii`, which is useful when the automatic detection does not fit the environment (ssh sessions, unknown terminal emulators, ...).
+The mode can also be forced with the `$VINE_PROTOCOL` environment variable, e.g. `VINE_PROTOCOL=ascii`, which is useful when the automatic detection does not fit the environment (ssh sessions, unknown terminal emulators, ...).
 This option takes precedence over it, and it takes precedence over the `protocol` config option.
 
 The ASCII graph follows the `--graph-style` and `--graph-width` options in the same way as the image graph.
@@ -43,11 +43,11 @@ _Possible values:_ `chrono`, `topo`
 
 `chrono` will order commits by commit date if possible.
 
-<img src="https://raw.githubusercontent.com/lusingander/serie/master/img/order-chrono.png" width=300>
+<img src="https://raw.githubusercontent.com/KonghaYao/vine/master/img/order-chrono.png" width=300>
 
 `topo` will order commits on the same branch consecutively if possible.
 
-<img src="https://raw.githubusercontent.com/lusingander/serie/master/img/order-topo.png" width=300>
+<img src="https://raw.githubusercontent.com/KonghaYao/vine/master/img/order-topo.png" width=300>
 
 ## -g, --graph-width \<TYPE\>
 
@@ -57,9 +57,9 @@ _Possible values:_ `auto`, `double`, `single`
 
 If not specified or `auto` is specified, `double` will be used automatically if there is enough width to display it, `single` otherwise.
 
-<img src="https://raw.githubusercontent.com/lusingander/serie/master/img/graph-width-double.png" width=300>
+<img src="https://raw.githubusercontent.com/KonghaYao/vine/master/img/graph-width-double.png" width=300>
 
-<img src="https://raw.githubusercontent.com/lusingander/serie/master/img/graph-width-single.png" width=300>
+<img src="https://raw.githubusercontent.com/KonghaYao/vine/master/img/graph-width-single.png" width=300>
 
 </details>
 
@@ -71,11 +71,11 @@ _Possible values:_ `rounded`, `angular`
 
 `rounded` will use rounded edges for the graph lines.
 
-<img src="https://raw.githubusercontent.com/lusingander/serie/master/img/graph-width-double.png" width=300>
+<img src="https://raw.githubusercontent.com/KonghaYao/vine/master/img/graph-width-double.png" width=300>
 
 `angular` will use angular edges for the graph lines.
 
-<img src="https://raw.githubusercontent.com/lusingander/serie/master/img/style-angular.png" width=300>
+<img src="https://raw.githubusercontent.com/KonghaYao/vine/master/img/style-angular.png" width=300>
 
 ## -i, --initial-selection \<TYPE\>
 
@@ -91,4 +91,4 @@ _Possible values:_ `latest`, `head`
 
 The primary branch to keep on the leftmost column.
 
-When specified, Serie preserves the first-parent commit spine of the specified branch along the leftmost column, displaying other branches in subsequent columns even if they contain newer commits.
+When specified, Vine preserves the first-parent commit spine of the specified branch along the leftmost column, displaying other branches in subsequent columns even if they contain newer commits.

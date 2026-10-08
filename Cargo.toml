@@ -1,10 +1,10 @@
 [package]
-name = "serie"
+name = "vine"
 version = "1.0.0"
 description = "A rich git commit graph in your terminal, like magic"
 authors = ["Kyosuke Fujimoto <kyoro.f@gmail.com>"]
-homepage = "https://github.com/KonghaYao/serie"
-repository = "https://github.com/KonghaYao/serie"
+homepage = "https://github.com/KonghaYao/vine"
+repository = "https://github.com/KonghaYao/vine"
 readme = "README.md"
 license = "MIT"
 keywords = ["git", "cli", "tui", "terminal"]

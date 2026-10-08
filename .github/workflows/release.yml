@@ -41,7 +41,7 @@ jobs:
           fi
           version="${tag#v}"
           manifest=$(awk '/^\[package\]/{f=1;next} /^\[/{f=0} f && $1=="version"{gsub(/[" ]/,"",$3); print $3; exit}' Cargo.toml)
-          lock=$(grep -m1 -A1 '^name = "serie"$' Cargo.lock | sed -n 's/^version = "\(.*\)"$/\1/p' || true)
+          lock=$(grep -m1 -A1 '^name = "vine"$' Cargo.lock | sed -n 's/^version = "\(.*\)"$/\1/p' || true)
           echo "tag=$tag, Cargo.toml=$manifest, Cargo.lock=$lock"
           if [ "$manifest" != "$version" ] || [ "$lock" != "$version" ]; then
             echo "::error::The tag '$tag' does not match Cargo.toml ($manifest) and Cargo.lock ($lock); bump the version first."
@@ -86,12 +86,12 @@ jobs:
           TARGET: ${{ matrix.targets.target }}
         run: |
           set -euo pipefail
-          tar -czf "serie-${VERSION}-${TARGET}.tar.gz" -C "target/${TARGET}/release" serie
+          tar -czf "vine-${VERSION}-${TARGET}.tar.gz" -C "target/${TARGET}/release" vine
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-${{ matrix.targets.target }}
-          path: serie-${{ needs.verify.outputs.version }}-${{ matrix.targets.target }}.tar.gz
+          path: vine-${{ needs.verify.outputs.version }}-${{ matrix.targets.target }}.tar.gz
           if-no-files-found: error
   release:
     needs:

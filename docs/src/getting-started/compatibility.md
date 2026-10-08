@@ -2,7 +2,7 @@
 
 ## Rendering modes
 
-Serie renders the commit graph in one of the following ways:
+Vine renders the commit graph in one of the following ways:
 
 - ASCII graph
   - Unicode box-drawing characters (`● ○ │ ─ ╭ ╮ ╰ ╯`), colored with the graph colors. Every terminal can display it, so it is the default: the image protocols are used only when they are selected explicitly.
@@ -49,15 +49,15 @@ It is used by default, in any terminal, and it can also be selected explicitly w
 The mode can be selected, in order of priority:
 
 1. The `--protocol` command line option.
-2. The `$SERIE_PROTOCOL` environment variable, e.g. `SERIE_PROTOCOL=kitty`.
+2. The `$VINE_PROTOCOL` environment variable, e.g. `VINE_PROTOCOL=kitty`.
    - This is useful for selecting the mode per environment (a shell on a remote host, a specific terminal, ...) without editing the config file.
 3. The `protocol` config option.
 
 ### How `auto` picks a mode
 
-`auto` is used only when it is specified explicitly with `--protocol auto`, `SERIE_PROTOCOL=auto`, or `protocol = "auto"`. It then works as follows.
+`auto` is used only when it is specified explicitly with `--protocol auto`, `VINE_PROTOCOL=auto`, or `protocol = "auto"`. It then works as follows.
 
-1. Explicitly specifying `--protocol`, `$SERIE_PROTOCOL`, or the `protocol` config option takes precedence over it (see [Forcing a mode](#forcing-a-mode)).
+1. Explicitly specifying `--protocol`, `$VINE_PROTOCOL`, or the `protocol` config option takes precedence over it (see [Forcing a mode](#forcing-a-mode)).
 2. Inside tmux, the ASCII graph is used.
    - Image protocols have to be forwarded by tmux with `allow-passthrough`, and whether it is enabled cannot be detected (see [Partially supported environments](#partially-supported-environments)).
 3. Otherwise, the kitty graphics protocol is used in terminals that are detected as supporting it (kitty, Ghostty).
@@ -74,4 +74,4 @@ The mode can be selected, in order of priority:
 
 - Sixel graphics is not supported.
 - Other terminal multiplexers (screen, Zellij, etc.) cannot display the image graph; they use the default ASCII graph.
-- Windows is not officially supported. Please refer to [the related issue](https://github.com/lusingander/serie/issues/147#issuecomment-4192875627).
+- Windows is not officially supported. Please refer to [the related issue of the upstream project](https://github.com/lusingander/serie/issues/147#issuecomment-4192875627).

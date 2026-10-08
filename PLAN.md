@@ -200,52 +200,52 @@ cargo test
 
 ### A. 鼠标与交互
 
-1. **点击选中 / 打开详情** —— Git Graph：单击 commit 打开 Commit Details View；serie：仅键盘（`Enter` 开详情）；建议：**P0 单击选中**，P2 双击打开详情。
-2. **多选比较两个提交** —— Git Graph：CTRL/CMD+click 第二个 commit → Compare View；serie：无；建议：P2，配合 §7 的动作体系做"选中两个 commit 比较"（`git diff A B`）。
-3. **右键上下文菜单** —— Git Graph：对 commit/branch/tag/stash 右键出 git 动作菜单；serie：只有全局 user command 键位；建议：**P1**，右键弹出"动作菜单"（内置 git 动作 + user command 列表），设计见 §7。
-4. **Hover 提示** —— Git Graph：悬浮 commit 顶点显示 tooltip（HEAD 是否包含、哪些分支/标签/储藏包含它）；serie：无；建议：P2，hover 时在状态栏显示提交摘要 + 所属 refs（TUI 版 tooltip）。
-5. **拖拽滚动条** —— Git Graph：VS Code 原生滚动条；serie：无（本次）；建议：**P0**。
-6. **快捷键：跳到 HEAD** —— Git Graph：`Ctrl+H` 把视图居中到 HEAD；serie：仅启动参数 `--initial-selection head`；建议：P1，新增 `go_to_head` 事件 + 键位（纯键盘，成本低）。
-7. **快捷键：上/下一个 stash** —— Git Graph：`Ctrl+S` / `Ctrl+Shift+S`；serie：无；建议：P1，配合已有 `Ref::Stash` 实现跳转。
-8. **滚动条上打标记** —— Git Graph：VS Code overview ruler / 缩略图；serie：无；建议：P1/P2，搜索匹配、HEAD、选中提交在滚动条上用小标记标出。
+1. **点击选中 / 打开详情** —— Git Graph：单击 commit 打开 Commit Details View；vine：仅键盘（`Enter` 开详情）；建议：**P0 单击选中**，P2 双击打开详情。
+2. **多选比较两个提交** —— Git Graph：CTRL/CMD+click 第二个 commit → Compare View；vine：无；建议：P2，配合 §7 的动作体系做"选中两个 commit 比较"（`git diff A B`）。
+3. **右键上下文菜单** —— Git Graph：对 commit/branch/tag/stash 右键出 git 动作菜单；vine：只有全局 user command 键位；建议：**P1**，右键弹出"动作菜单"（内置 git 动作 + user command 列表），设计见 §7。
+4. **Hover 提示** —— Git Graph：悬浮 commit 顶点显示 tooltip（HEAD 是否包含、哪些分支/标签/储藏包含它）；vine：无；建议：P2，hover 时在状态栏显示提交摘要 + 所属 refs（TUI 版 tooltip）。
+5. **拖拽滚动条** —— Git Graph：VS Code 原生滚动条；vine：无（本次）；建议：**P0**。
+6. **快捷键：跳到 HEAD** —— Git Graph：`Ctrl+H` 把视图居中到 HEAD；vine：仅启动参数 `--initial-selection head`；建议：P1，新增 `go_to_head` 事件 + 键位（纯键盘，成本低）。
+7. **快捷键：上/下一个 stash** —— Git Graph：`Ctrl+S` / `Ctrl+Shift+S`；vine：无；建议：P1，配合已有 `Ref::Stash` 实现跳转。
+8. **滚动条上打标记** —— Git Graph：VS Code overview ruler / 缩略图；vine：无；建议：P1/P2，搜索匹配、HEAD、选中提交在滚动条上用小标记标出。
 
 ### B. 搜索与过滤
 
-1. **Find Widget** —— Git Graph：搜索 commit message/日期/作者/hash/分支/标签，高亮 + 匹配计数；serie：已有（目标字段/忽略大小写/模糊/`n`/`N`/状态栏计数）；建议：已覆盖。
-2. **只显示匹配（过滤模式）** —— Git Graph："匹配项过滤"视图；serie：无（只高亮 + 跳转）；建议：P1 过滤模式切换。
-3. **搜索范围** —— Git Graph：支持日期区间等；serie：字段级范围已有；建议：P2 日期范围。
-4. **分支过滤下拉** —— Git Graph：Show All / 多选分支 / 自定义 glob 模式；serie：仅 `--primary-branch` 与全量 refs；建议：P2 运行时"只看当前分支"切换。
-5. **提交排序** —— Git Graph：date/topo + `--first-parent`、reflog-only 等；serie：`--order chrono|topo`；建议：P3 `--first-parent`、reflog 开关。
+1. **Find Widget** —— Git Graph：搜索 commit message/日期/作者/hash/分支/标签，高亮 + 匹配计数；vine：已有（目标字段/忽略大小写/模糊/`n`/`N`/状态栏计数）；建议：已覆盖。
+2. **只显示匹配（过滤模式）** —— Git Graph："匹配项过滤"视图；vine：无（只高亮 + 跳转）；建议：P1 过滤模式切换。
+3. **搜索范围** —— Git Graph：支持日期区间等；vine：字段级范围已有；建议：P2 日期范围。
+4. **分支过滤下拉** —— Git Graph：Show All / 多选分支 / 自定义 glob 模式；vine：仅 `--primary-branch` 与全量 refs；建议：P2 运行时"只看当前分支"切换。
+5. **提交排序** —— Git Graph：date/topo + `--first-parent`、reflog-only 等；vine：`--order chrono|topo`；建议：P3 `--first-parent`、reflog 开关。
 
 ### C. 提交详情与文件视图
 
-1. **详情内容** —— Git Graph：完整 message、作者/提交者、父提交、标签/分支、**签名状态**、Markdown 子集、issue 链接；serie：基本信息 + 文件变更列表；建议：P2 签名状态（`git log --show-signature` / `%G?`）、P2 相对日期、P3 Markdown/emoji/issue 链接。
-2. **文件变更交互** —— Git Graph：点击用 VS Code diff 打开；可打开当前版本、复制路径；serie：user command（用户自配 `git diff` 等）；建议：P2，详情页对选中文件运行 user command / 复制路径（契合现有机制）。
-3. **与任意提交比较** —— Git Graph：选中两个提交比较文件变更；serie：无；建议：P3（见 A-2 多选）。
-4. **Uncommitted Changes 伪节点** —— Git Graph：工作区未提交变更作为伪节点显示、可比较；serie：无（`git log --branches --remotes --tags`）；建议：P3，先讨论是否属于 Goals。
-5. **Code Review 状态** —— Git Graph：已审阅文件加粗/持久化（90 天）；serie：无；建议：P3/暂缓。
+1. **详情内容** —— Git Graph：完整 message、作者/提交者、父提交、标签/分支、**签名状态**、Markdown 子集、issue 链接；vine：基本信息 + 文件变更列表；建议：P2 签名状态（`git log --show-signature` / `%G?`）、P2 相对日期、P3 Markdown/emoji/issue 链接。
+2. **文件变更交互** —— Git Graph：点击用 VS Code diff 打开；可打开当前版本、复制路径；vine：user command（用户自配 `git diff` 等）；建议：P2，详情页对选中文件运行 user command / 复制路径（契合现有机制）。
+3. **与任意提交比较** —— Git Graph：选中两个提交比较文件变更；vine：无；建议：P3（见 A-2 多选）。
+4. **Uncommitted Changes 伪节点** —— Git Graph：工作区未提交变更作为伪节点显示、可比较；vine：无（`git log --branches --remotes --tags`）；建议：P3，先讨论是否属于 Goals。
+5. **Code Review 状态** —— Git Graph：已审阅文件加粗/持久化（90 天）；vine：无；建议：P3/暂缓。
 
 ### D. 图形显示与主题
 
-1. **Reference labels** —— Git Graph：可合并 local/remote 同名分支标签、对齐方式可选；serie：refs 直接显示在 subject 前；建议：P2，合并 local+remote 同名标签（常见诉求）、对齐选项。
-2. **Mute 样式** —— Git Graph：非 HEAD 祖先提交、merge commit 淡化；serie：无；建议：P2（纯渲染改动）。
-3. **作者头像** —— Git Graph：拉取并缓存 avatar；serie：已用终端图像协议画 graph，具备图像能力；建议：P3，用图像协议画头像（依赖协议/缓存/网络，需讨论）。
-4. **Emoji shortcode** —— Git Graph：常见短码/gitmoji 自动替换，可自定义映射；serie：无；建议：P2/P3。
-5. **列显示/宽度** —— Git Graph：运行时列宽拖拽 + 列显示切换；serie：配置文件静态定义 columns/宽度；建议：P3（鼠标拖拽列宽成本高，暂列 P3）。
-6. **图形颜色/样式** —— Git Graph：可配置；serie：已有（`graph.color` / `--graph-style`）；建议：已覆盖。
+1. **Reference labels** —— Git Graph：可合并 local/remote 同名分支标签、对齐方式可选；vine：refs 直接显示在 subject 前；建议：P2，合并 local+remote 同名标签（常见诉求）、对齐选项。
+2. **Mute 样式** —— Git Graph：非 HEAD 祖先提交、merge commit 淡化；vine：无；建议：P2（纯渲染改动）。
+3. **作者头像** —— Git Graph：拉取并缓存 avatar；vine：已用终端图像协议画 graph，具备图像能力；建议：P3，用图像协议画头像（依赖协议/缓存/网络，需讨论）。
+4. **Emoji shortcode** —— Git Graph：常见短码/gitmoji 自动替换，可自定义映射；vine：无；建议：P2/P3。
+5. **列显示/宽度** —— Git Graph：运行时列宽拖拽 + 列显示切换；vine：配置文件静态定义 columns/宽度；建议：P3（鼠标拖拽列宽成本高，暂列 P3）。
+6. **图形颜色/样式** —— Git Graph：可配置；vine：已有（`graph.color` / `--graph-style`）；建议：已覆盖。
 
 ### E. 大数据量体验
 
-1. **分页加载** —— Git Graph：Initial Load + "Load More Commits" + 滚到底自动加载；serie：`-n/--max-count` 一次性加载；建议：P2，增量加载（需要改 `Repository::load` 与图计算为可增量，工作量较大）。
-2. **Show tags/stashes/remotes 开关** —— Git Graph：设置项控制显示哪些 ref；serie：全量显示；建议：P3，配置开关过滤 refs。
+1. **分页加载** —— Git Graph：Initial Load + "Load More Commits" + 滚到底自动加载；vine：`-n/--max-count` 一次性加载；建议：P2，增量加载（需要改 `Repository::load` 与图计算为可增量，工作量较大）。
+2. **Show tags/stashes/remotes 开关** —— Git Graph：设置项控制显示哪些 ref；vine：全量显示；建议：P3，配置开关过滤 refs。
 
 ### F. 集成与其它
 
-1. **Fetch/Pull/Push、remotes 管理、PR 创建** —— Git Graph：内置按钮与设置面板；serie：原为 Non-Goal；建议：**改为内置（`fetch`/`pull`/`push` 按 §7-4 阶段 4 实现）**；remotes 管理界面与 PR 创建仍不做。
-2. **复制内容** —— Git Graph：hash / subject / 分支/标签/储藏名 / 文件路径；serie：仅 commit hash（`c`/`C`）；建议：P1 复制 subject、ref 名（成本低），P2 文件路径（详情页）。
-3. **自定义快捷键** —— Git Graph：VS Code 设置；serie：已支持（custom keybindings）；建议：已覆盖。
-4. **配置随仓库共享** —— Git Graph：导出仓库级配置文件；serie：配置在 XDG（全局）；建议：P3，repo-local `.serie.toml` 覆盖（需讨论优先级与安全）。
-5. **多仓库切换** —— Git Graph：仓库下拉；serie：单仓库（Non-Goal）；建议：不做。
+1. **Fetch/Pull/Push、remotes 管理、PR 创建** —— Git Graph：内置按钮与设置面板；vine：原为 Non-Goal；建议：**改为内置（`fetch`/`pull`/`push` 按 §7-4 阶段 4 实现）**；remotes 管理界面与 PR 创建仍不做。
+2. **复制内容** —— Git Graph：hash / subject / 分支/标签/储藏名 / 文件路径；vine：仅 commit hash（`c`/`C`）；建议：P1 复制 subject、ref 名（成本低），P2 文件路径（详情页）。
+3. **自定义快捷键** —— Git Graph：VS Code 设置；vine：已支持（custom keybindings）；建议：已覆盖。
+4. **配置随仓库共享** —— Git Graph：导出仓库级配置文件；vine：配置在 XDG（全局）；建议：P3，repo-local `.vine.toml` 覆盖（需讨论优先级与安全）。
+5. **多仓库切换** —— Git Graph：仓库下拉；vine：单仓库（Non-Goal）；建议：不做。
 
 ---
 
@@ -335,7 +335,7 @@ cargo test
 
 ### 7.6 与 upstream Non-Goals 的关系
 
-1. upstream 明确把"完整 Git 客户端""复杂 TUI 交互"列为 Non-Goals（`docs/src/introduction/index.md`、`CONTRIBUTING.md:17`）；本仓库是 fork（`KonghaYao/serie`），偏离是自洽的。
+1. upstream 明确把"完整 Git 客户端""复杂 TUI 交互"列为 Non-Goals（`docs/src/introduction/index.md`、`CONTRIBUTING.md:17`）；本仓库是 fork（`KonghaYao/vine`），偏离是自洽的。
 2. 建议：动作体系由 `actions.enable` 统一切换 + 独立文件实现，保持与 upstream 解耦，降低后续合并成本。
 3. 若将来要向上游提 PR，需先按 CONTRIBUTING 开 issue 讨论范围与预期行为。
 

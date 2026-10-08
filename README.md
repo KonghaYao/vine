@@ -1,6 +1,5 @@
-# Serie
+# Vine
 
-[![Crate Status](https://img.shields.io/crates/v/serie.svg)](https://crates.io/crates/serie)
 [![Built With Ratatui](https://img.shields.io/badge/Built_With-Ratatui-000?logo=ratatui&logoColor=fff&labelColor=000&color=fff)](https://ratatui.rs)
 
 A rich git commit graph in your terminal, like magic 📚
@@ -11,7 +10,9 @@ A rich git commit graph in your terminal, like magic 📚
 
 ## About
 
-Serie ([`/zéːriə/`](https://lusingander.github.io/serie/faq/index.html#how-do-i-pronounce-serie)) is a TUI application that renders commit graphs like `git log --graph --all`, drawing the graph with Unicode box-drawing characters by default, and using the terminal emulators' image display protocol for high-quality output when it is selected explicitly.
+Vine ([`/vaɪn/`](https://konghayao.github.io/vine/faq/index.html#how-do-i-pronounce-vine)) is a TUI application that renders commit graphs like `git log --graph --all`, drawing the graph with Unicode box-drawing characters by default, and using the terminal emulators' image display protocol for high-quality output when it is selected explicitly.
+
+It is a fork of [serie](https://github.com/lusingander/serie): the commit graph stays the center of the application. On top of it, Vine adds mouse support, in-app git actions, a status bar, and the Unicode graph by default.
 
 ### Why?
 
@@ -32,42 +33,44 @@ Personally, I found the output from `git log --graph` difficult to read, even wi
 
 ## Documentation
 
-For detailed usage, configuration, and advanced features, see [the full documentation](https://lusingander.github.io/serie/).
+For detailed usage, configuration, and advanced features, see [the full documentation](https://konghayao.github.io/vine/).
 
 ## Requirements
 
 - Git
 - A terminal emulator
   - The graph is drawn with Unicode box-drawing characters by default. In a terminal with an image display protocol, the high-quality image graph can be enabled explicitly with `--protocol`.
-  - Refer to [Compatibility](https://lusingander.github.io/serie/getting-started/compatibility.html) for details.
+  - Refer to [Compatibility](https://konghayao.github.io/vine/getting-started/compatibility.html) for details.
 
 ## Installation
 
-If you're using Cargo:
+### [mise](https://mise.jdx.dev) (recommended)
 
 ```
-$ cargo install --locked serie
+$ mise use -g github:KonghaYao/vine
 ```
 
-For other download options, see [Installation](https://lusingander.github.io/serie/getting-started/installation.html).
+mise downloads the pre-compiled binary for your platform from [releases](https://github.com/KonghaYao/vine/releases) and puts `vine` on your `PATH`. It is updated with `mise upgrade`.
+
+For other download options, see [Installation](https://konghayao.github.io/vine/getting-started/installation.html).
 
 ## Usage
 
 ### Basic
 
-Run `serie` in the directory where your git repository exists.
+Run `vine` in the directory where your git repository exists.
 
 ```
 $ cd <your git repository>
-$ serie
+$ vine
 ```
 
 ### Options
 
 ```
-Serie - A rich git commit graph in your terminal, like magic 📚
+Vine - A rich git commit graph in your terminal, like magic 📚
 
-Usage: serie [OPTIONS]
+Usage: vine [OPTIONS]
 
 Options:
   -n, --max-count <NUMBER>        Maximum number of commits to render
@@ -81,13 +84,13 @@ Options:
   -V, --version                   Print version
 ```
 
-For details on each option, see [Command Line Options](https://lusingander.github.io/serie/getting-started/command-line-options.html).
+For details on each option, see [Command Line Options](https://konghayao.github.io/vine/getting-started/command-line-options.html).
 
 ### Keybindings
 
 You can see the keybindings by pressing the `?` key.
 
-The [default key bindings](https://lusingander.github.io/serie/keybindings/index.html) can be overridden. See [Custom Keybindings](https://lusingander.github.io/serie/keybindings/custom-keybindings.html) for more information.
+The [default key bindings](https://konghayao.github.io/vine/keybindings/index.html) can be overridden. See [Custom Keybindings](https://konghayao.github.io/vine/keybindings/custom-keybindings.html) for more information.
 
 ### Mouse
 
@@ -134,22 +137,22 @@ Actions cover the common commit, branch, tag and stash operations (including che
 
 Config files are loaded in the following order of priority:
 
-- `$SERIE_CONFIG_FILE`
-  - If `$SERIE_CONFIG_FILE` is set but the file does not exist, an error occurs.
-- `$XDG_CONFIG_HOME/serie/config.toml`
+- `$VINE_CONFIG_FILE`
+  - If `$VINE_CONFIG_FILE` is set but the file does not exist, an error occurs.
+- `$XDG_CONFIG_HOME/vine/config.toml`
   - If `$XDG_CONFIG_HOME` is not set, `~/.config/` will be used instead.
 
 If the config file does not exist, the default values will be used for all items.
 If the config file exists but some items are not set, the default values will be used for those unset items.
 
-For detailed information about the config file format, see [Config File Format](https://lusingander.github.io/serie/configurations/config-file-format.html).
+For detailed information about the config file format, see [Config File Format](https://konghayao.github.io/vine/configurations/config-file-format.html).
 
 ### User command
 
 The User command feature allows you to execute custom external commands.
 You can display the output of commands like `git diff` in a dedicated view, execute commands like branch deletion in the background, or run interactive commands like `vim` by suspending the application.
 
-For details on how to set commands, see [User Command](https://lusingander.github.io/serie/features/user-command.html).
+For details on how to set commands, see [User Command](https://konghayao.github.io/vine/features/user-command.html).
 
 ## Compatibility
 
@@ -163,11 +166,11 @@ These rendering modes are supported:
 - [Terminal graphics protocol (kitty)](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
   - Supports both the existing graphics protocol mode and the [Unicode placeholder](https://sw.kovidgoyal.net/kitty/graphics-protocol/#unicode-placeholders) mode.
 
-An image protocol can be selected with the `--protocol` option, the `$SERIE_PROTOCOL` environment variable (e.g. `SERIE_PROTOCOL=kitty`), or the `protocol` config option.
+An image protocol can be selected with the `--protocol` option, the `$VINE_PROTOCOL` environment variable (e.g. `VINE_PROTOCOL=kitty`), or the `protocol` config option.
 The `--protocol` option takes precedence over the environment variable, and the environment variable takes precedence over the `protocol` config option.
-`auto` is the value that lets Serie pick an image protocol from the terminal environment; specify it when you want the image graph to be enabled automatically in a terminal that supports it.
+`auto` is the value that lets Vine pick an image protocol from the terminal environment; specify it when you want the image graph to be enabled automatically in a terminal that supports it.
 
-For more information, see [Compatibility](https://lusingander.github.io/serie/getting-started/compatibility.html).
+For more information, see [Compatibility](https://konghayao.github.io/vine/getting-started/compatibility.html).
 
 ### Partially supported environments
 
@@ -179,7 +182,7 @@ For more information, see [Compatibility](https://lusingander.github.io/serie/ge
 
 - Sixel graphics is not supported.
 - Other terminal multiplexers (screen, Zellij, etc.) cannot display the image graph; use the default ASCII graph there.
-- Windows is not officially supported. Please refer to [the related issue](https://github.com/lusingander/serie/issues/147#issuecomment-4192875627).
+- Windows is not officially supported. Please refer to [the related issue of the upstream project](https://github.com/lusingander/serie/issues/147#issuecomment-4192875627).
 
 ## Screenshots
 

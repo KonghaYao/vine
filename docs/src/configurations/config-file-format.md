@@ -135,7 +135,7 @@ The protocol used to render the commit graph.
   - `kitty-unicode` — kitty graphics protocol with [Unicode placeholders](https://sw.kovidgoyal.net/kitty/graphics-protocol/#unicode-placeholders) (also works under tmux)
   - `auto` — use the best mode for the current terminal. Uses an image protocol when the terminal is detected as supporting one (kitty, Ghostty, iTerm2, WezTerm, VSCode, mintty), and the ASCII graph otherwise. Inside tmux, the ASCII graph is used unless a protocol is specified explicitly.
 
-The value specified in the command line argument takes precedence, and the `$SERIE_PROTOCOL` environment variable takes precedence over this value.
+The value specified in the command line argument takes precedence, and the `$VINE_PROTOCOL` environment variable takes precedence over this value.
 
 See [Compatibility](../getting-started/compatibility.md) for the mode that each terminal uses.
 

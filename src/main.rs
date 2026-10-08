@@ -37,7 +37,7 @@ use clap::{Parser, ValueEnum};
 use graph::GraphImageManager;
 use serde::Deserialize;
 
-/// Serie - A rich git commit graph in your terminal, like magic 📚
+/// Vine - A rich git commit graph in your terminal, like magic 📚
 #[derive(Parser)]
 #[command(version)]
 struct Args {
@@ -81,16 +81,16 @@ enum ImageProtocolType {
 }
 
 /// The environment variable that forces the image protocol, taking precedence over the config file.
-const PROTOCOL_ENV_NAME: &str = "SERIE_PROTOCOL";
+const PROTOCOL_ENV_NAME: &str = "VINE_PROTOCOL";
 
 fn parse_protocol_type(value: &str) -> Option<ImageProtocolType> {
     ImageProtocolType::from_str(value.trim(), true).ok()
 }
 
-/// The protocol type forced by `$SERIE_PROTOCOL`, if any.
+/// The protocol type forced by `$VINE_PROTOCOL`, if any.
 ///
 /// This takes precedence over the `protocol` config option, so that the mode can be forced per
-/// environment (e.g. `SERIE_PROTOCOL=ascii` in a shell on a remote host) without editing the config.
+/// environment (e.g. `VINE_PROTOCOL=ascii` in a shell on a remote host) without editing the config.
 fn protocol_type_from_env() -> Result<Option<ImageProtocolType>> {
     protocol_type_from_value(env::var(PROTOCOL_ENV_NAME).ok())
 }
@@ -118,7 +118,7 @@ fn protocol_type_from_value(value: Option<String>) -> Result<Option<ImageProtoco
 }
 
 /// Resolves the protocol type to use, in order of precedence: the `--protocol` option, the
-/// `$SERIE_PROTOCOL` environment variable, and the `protocol` config option.
+/// `$VINE_PROTOCOL` environment variable, and the `protocol` config option.
 ///
 /// `None` means that none of them is specified, and the default is used.
 fn resolve_protocol_type(
@@ -342,7 +342,7 @@ mod protocol_env_tests {
     fn test_protocol_type_from_value_reports_an_invalid_value() {
         let err = protocol_type_from_value(Some("image".into())).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("SERIE_PROTOCOL"), "{msg}");
+        assert!(msg.contains("VINE_PROTOCOL"), "{msg}");
         assert!(msg.contains("kitty-unicode"), "{msg}");
     }
 
@@ -379,12 +379,12 @@ mod protocol_env_tests {
             None,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("SERIE_PROTOCOL"), "{err}");
+        assert!(err.to_string().contains("VINE_PROTOCOL"), "{err}");
 
         let err =
             resolve_protocol_type(None, protocol_type_from_value(Some("invalid".into())), None)
                 .unwrap_err();
-        assert!(err.to_string().contains("SERIE_PROTOCOL"), "{err}");
+        assert!(err.to_string().contains("VINE_PROTOCOL"), "{err}");
     }
 
     #[test]

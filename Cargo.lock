@@ -2125,36 +2125,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serie"
-version = "1.0.0"
-dependencies = [
- "ansi-to-tui",
- "arboard",
- "base64 0.22.1",
- "chrono",
- "clap",
- "console",
- "dircpy",
- "fuzzy-matcher",
- "garde",
- "image",
- "laurier",
- "notify",
- "once_cell",
- "ratatui",
- "rstest",
- "rustc-hash",
- "semver",
- "serde",
- "smart-default",
- "tempfile",
- "text-to-png",
- "toml",
- "tui-input",
- "umbra",
-]
-
-[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2813,6 +2783,36 @@ name = "version_check"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49874b5167b65d7193b8aba1567f5c7d93d001cafc34600cee003eda787e483f"
+
+[[package]]
+name = "vine"
+version = "1.0.0"
+dependencies = [
+ "ansi-to-tui",
+ "arboard",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "console",
+ "dircpy",
+ "fuzzy-matcher",
+ "garde",
+ "image",
+ "laurier",
+ "notify",
+ "once_cell",
+ "ratatui",
+ "rstest",
+ "rustc-hash",
+ "semver",
+ "serde",
+ "smart-default",
+ "tempfile",
+ "text-to-png",
+ "toml",
+ "tui-input",
+ "umbra",
+]
 
 [[package]]
 name = "vtparse"
