@@ -73,6 +73,9 @@ fn div_round(value: usize, divisor: usize) -> usize {
 /// The maximum delay between the two clicks of a double click.
 const DOUBLE_CLICK_DELAY: Duration = Duration::from_millis(500);
 
+/// The symbol of the more button, which opens the action menu of the row it is on.
+const MORE_BUTTON: &str = "…";
+
 /// The style of the name of a ref: reversed, so that the badge is drawn in the color of the type of
 /// the ref on the background of the terminal.
 const BADGE_MODIFIER: Modifier = Modifier::BOLD.union(Modifier::REVERSED);
@@ -110,6 +113,32 @@ pub fn is_double_click(previous: Option<BadgeClick>, current: Option<BadgeClick>
     };
     previous.rect == current.rect
         && current.at.saturating_duration_since(previous.at) <= DOUBLE_CLICK_DELAY
+}
+
+/// The commit under the mouse, used to render the more button of its row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HoveredCommit {
+    /// The absolute index of the hovered commit.
+    pub index: usize,
+    /// Whether the mouse is resting on the more button of the row, waiting for the dwell that
+    /// opens the action menu.
+    pub armed: bool,
+}
+
+/// Splits the area of the columns of the list from the column of the more button bar.
+///
+/// The more button bar is the rightmost column of `area`, and it is reserved only when it is
+/// enabled and the remaining columns still have room. The column of the bar is also returned, so
+/// that it can be recorded for the hit test of the mouse.
+fn split_more_button_column(area: Rect, more_button: bool) -> (Rect, Option<u16>) {
+    if !more_button || area.width < 2 {
+        return (area, None);
+    }
+    let columns_area = Rect {
+        width: area.width - 1,
+        ..area
+    };
+    (columns_area, Some(area.right() - 1))
 }
 
 #[derive(Debug)]
@@ -285,6 +314,13 @@ pub struct CommitListState<'a> {
     /// The badges of the last rendered frame, used to hit test clicks.
     ref_badges: Vec<RefBadge>,
 
+    /// The column of the more button bar of the last rendered frame, or `None` when it is not
+    /// shown.
+    ///
+    /// Like the ref badges, it is recorded while rendering, so that the hit test of the mouse
+    /// always matches what is on the screen.
+    more_button_column: Option<u16>,
+
     selected: usize,
     offset: usize,
     total: usize,
@@ -316,6 +352,7 @@ impl<'a> CommitListState<'a> {
             search_input: Input::default(),
             search_matches: vec![SearchMatch::default(); total],
             ref_badges: Vec::new(),
+            more_button_column: None,
             selected: 0,
             offset: 0,
             total,
@@ -587,6 +624,17 @@ impl<'a> CommitListState<'a> {
         self.ref_badges
             .iter()
             .find(|badge| badge.rect.contains(Position::new(column, row)))
+    }
+
+    /// Replaces the column of the more button bar, which is recorded while rendering.
+    pub fn set_more_button_column(&mut self, column: Option<u16>) {
+        self.more_button_column = column;
+    }
+
+    /// The column of the more button bar of the last rendered frame, or `None` when it is not
+    /// shown.
+    pub fn more_button_column(&self) -> Option<u16> {
+        self.more_button_column
     }
 
     /// The scrollbar geometry, or `None` when the scrollbar is not shown.
@@ -931,6 +979,10 @@ impl<'a> CommitListState<'a> {
 pub struct CommitList<'a> {
     ctx: Rc<AppContext>,
     scrollbar: bool,
+    /// Whether the more button bar is reserved at the right edge of the list.
+    more_button: bool,
+    /// The commit under the mouse, whose row shows the more button.
+    hovered: Option<HoveredCommit>,
     _marker: std::marker::PhantomData<&'a ()>,
 }
 
@@ -939,6 +991,8 @@ impl<'a> CommitList<'a> {
         Self {
             ctx,
             scrollbar: false,
+            more_button: false,
+            hovered: None,
             _marker: std::marker::PhantomData,
         }
     }
@@ -946,6 +1000,21 @@ impl<'a> CommitList<'a> {
     /// Render the scrollbar on the right edge of the list.
     pub fn scrollbar(mut self, scrollbar: bool) -> Self {
         self.scrollbar = scrollbar;
+        self
+    }
+
+    /// Reserve the rightmost column of the list for the more button bar.
+    ///
+    /// The bar is reserved only when it is enabled and the list is wide enough, so that a narrow
+    /// terminal does not lose its last column.
+    pub fn more_button(mut self, more_button: bool) -> Self {
+        self.more_button = more_button;
+        self
+    }
+
+    /// Show the more button on the row of the given commit, which is the commit under the mouse.
+    pub fn hovered(mut self, hovered: Option<HoveredCommit>) -> Self {
+        self.hovered = hovered;
         self
     }
 }
@@ -960,15 +1029,19 @@ impl<'a> StatefulWidget for CommitList<'a> {
             Layout::horizontal([Constraint::Min(0), Constraint::Length(1)]).areas(area);
         let list_area = if self.scrollbar { content_area } else { area };
 
+        let (columns_area, more_button_column) =
+            split_more_button_column(list_area, self.more_button);
+        state.set_more_button_column(more_button_column);
+
         let constraints = calc_cell_widths(
-            list_area.width,
+            columns_area.width,
             self.ctx.ui_config.list.subject_min_width,
             state.graph_area_cell_width(),
             self.ctx.ui_config.list.name_width,
             self.ctx.ui_config.list.date_width,
             &self.ctx.ui_config.list.columns,
         );
-        let chunks = Layout::horizontal(constraints).split(list_area);
+        let chunks = Layout::horizontal(constraints).split(columns_area);
 
         // The badges are collected while rendering, so that a click can be matched to the badge
         // that was rendered under the cursor
@@ -997,6 +1070,10 @@ impl<'a> StatefulWidget for CommitList<'a> {
         }
         state.set_ref_badges(ref_badges);
 
+        if let Some(column) = more_button_column {
+            self.render_more_buttons(buf, list_area, column, state);
+        }
+
         if self.scrollbar {
             self.render_scrollbar(buf, scrollbar_area, state);
         }
@@ -1006,6 +1083,46 @@ impl<'a> StatefulWidget for CommitList<'a> {
 impl CommitList<'_> {
     fn update_state(&self, area: Rect, state: &mut CommitListState) {
         state.update_height(area.height as usize);
+    }
+
+    /// Render the more button bar, which shows the more button of the row under the mouse.
+    ///
+    /// The cells of the bar are always drawn, so that the background of the selected row is not
+    /// interrupted at the right edge of the list.
+    fn render_more_buttons(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        column: u16,
+        state: &CommitListState,
+    ) {
+        if area.is_empty() {
+            return;
+        }
+        let hovered_row = self
+            .hovered
+            .and_then(|hovered| hovered.index.checked_sub(state.offset))
+            .filter(|row| *row < state.height);
+        for row in 0..area.height as usize {
+            if state.offset + row >= state.total {
+                break;
+            }
+            let hovered = hovered_row == Some(row);
+            let mut style = Style::default();
+            if Some(row) == state.selected_row() {
+                style = style
+                    .bg(self.ctx.color_theme.list_selected_bg)
+                    .fg(self.ctx.color_theme.list_selected_fg);
+            } else if hovered {
+                style = style.fg(self.ctx.color_theme.list_subject_fg);
+            }
+            if hovered && self.hovered.is_some_and(|hovered| hovered.armed) {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+            let symbol = if hovered { MORE_BUTTON } else { " " };
+            let cell = &mut buf[(column, area.top() + row as u16)];
+            cell.set_symbol(symbol).set_style(style);
+        }
     }
 
     fn render_scrollbar(&self, buf: &mut Buffer, area: Rect, state: &CommitListState) {
@@ -1534,9 +1651,10 @@ mod tests {
 
     use crate::{
         color::GraphColorSet,
-        config::GraphColorConfig,
+        config::{ActionsConfig, CoreConfig, GraphColorConfig, UiConfig},
         git::Repository,
         graph::{calc_graph, CellWidthType, GraphImageWidthMode, GraphStyle},
+        keybind::KeyBind,
         protocol::ImageProtocol,
         view::ListRefreshViewContext,
     };
@@ -3485,5 +3603,175 @@ mod tests {
         assert!(!is_double_click(badge_click(rect, now), None));
         assert!(!is_double_click(None, badge_click(rect, now)));
         assert!(!is_double_click(None, None));
+    }
+
+    fn test_app_context() -> Rc<AppContext> {
+        Rc::new(AppContext {
+            keybind: KeyBind::default(),
+            core_config: CoreConfig::default(),
+            ui_config: UiConfig::default(),
+            actions_config: ActionsConfig::default(),
+            color_theme: ColorTheme::default(),
+            image_protocol: ImageProtocol::Iterm2,
+        })
+    }
+
+    /// Renders the commit list on a test buffer, and gives the buffer and the recorded more
+    /// button column to the closure.
+    fn with_rendered_commit_list<R>(
+        subjects: &[&str],
+        width: u16,
+        height: u16,
+        more_button: bool,
+        hovered: Option<HoveredCommit>,
+        f: impl FnOnce(&Buffer, Option<u16>) -> R,
+    ) -> R {
+        with_commit_list_state(subjects, |state| {
+            let area = Rect::new(0, 0, width, height);
+            let mut buf = Buffer::empty(area);
+            state.ensure_visible_graph_uploaded();
+            let commit_list = CommitList::new(test_app_context())
+                .scrollbar(true)
+                .more_button(more_button)
+                .hovered(hovered);
+            commit_list.render(area, &mut buf, state);
+            f(&buf, state.more_button_column())
+        })
+    }
+
+    #[test]
+    fn test_the_more_button_column_is_reserved_at_the_left_of_the_scrollbar() {
+        let content = Rect::new(10, 3, 20, 5);
+        assert_eq!(
+            split_more_button_column(content, true),
+            (Rect::new(10, 3, 19, 5), Some(29))
+        );
+        assert_eq!(
+            split_more_button_column(content, false),
+            (content, None),
+            "the column is not reserved when the more button is disabled"
+        );
+    }
+
+    #[test]
+    fn test_the_more_button_column_is_not_reserved_when_there_is_no_room() {
+        for area in [Rect::new(10, 3, 0, 5), Rect::new(10, 3, 1, 5)] {
+            assert_eq!(
+                split_more_button_column(area, true),
+                (area, None),
+                "{area:?}"
+            );
+        }
+        assert_eq!(
+            split_more_button_column(Rect::new(0, 0, 2, 1), true),
+            (Rect::new(0, 0, 1, 1), Some(1)),
+            "a column is still reserved when only one column is left for the content"
+        );
+    }
+
+    #[test]
+    fn test_the_more_button_is_rendered_only_on_the_hovered_row() {
+        let buffer = with_rendered_commit_list(
+            &["a", "b", "c"],
+            60,
+            5,
+            true,
+            Some(HoveredCommit {
+                index: 1,
+                armed: false,
+            }),
+            |buf, column| {
+                assert_eq!(column, Some(58));
+                buf.clone()
+            },
+        );
+        assert_eq!(buffer[(58, 1)].symbol(), MORE_BUTTON);
+        assert_eq!(buffer[(58, 0)].symbol(), " ");
+        assert_eq!(buffer[(58, 2)].symbol(), " ");
+        assert_eq!(buffer[(58, 3)].symbol(), " ", "a row without a commit");
+    }
+
+    #[test]
+    fn test_the_more_button_is_not_rendered_without_a_hovered_row() {
+        let buffer =
+            with_rendered_commit_list(&["a", "b", "c"], 60, 5, true, None, |buf, _| buf.clone());
+        for row in 0..5 {
+            assert_eq!(buffer[(58, row)].symbol(), " ", "row {row}");
+        }
+    }
+
+    #[test]
+    fn test_the_more_button_column_is_not_reserved_when_the_more_button_is_disabled() {
+        let buffer = with_rendered_commit_list(
+            &["a", "b", "c"],
+            60,
+            5,
+            false,
+            Some(HoveredCommit {
+                index: 1,
+                armed: false,
+            }),
+            |buf, column| {
+                assert_eq!(column, None);
+                buf.clone()
+            },
+        );
+        for row in 0..5 {
+            assert_eq!(buffer[(58, row)].symbol(), " ", "row {row}");
+        }
+    }
+
+    #[test]
+    fn test_the_more_button_bar_keeps_the_background_of_the_selected_row() {
+        let buffer = with_rendered_commit_list(
+            &["a", "b", "c"],
+            60,
+            5,
+            true,
+            Some(HoveredCommit {
+                index: 1,
+                armed: false,
+            }),
+            |buf, _| buf.clone(),
+        );
+        let selected = buffer[(58, 0)].style();
+        assert_eq!(selected.bg, Some(Color::DarkGray));
+        assert_eq!(selected.fg, Some(Color::White));
+        assert_eq!(
+            buffer[(58, 1)].style().bg,
+            Some(Color::Reset),
+            "a row that is not selected has no background"
+        );
+    }
+
+    #[test]
+    fn test_the_armed_more_button_is_reversed() {
+        let buffer = with_rendered_commit_list(
+            &["a", "b", "c"],
+            60,
+            5,
+            true,
+            Some(HoveredCommit {
+                index: 1,
+                armed: true,
+            }),
+            |buf, _| buf.clone(),
+        );
+        assert_eq!(buffer[(58, 1)].symbol(), MORE_BUTTON);
+        assert!(buffer[(58, 1)]
+            .style()
+            .add_modifier
+            .contains(Modifier::REVERSED));
+        assert_eq!(buffer[(58, 2)].style().add_modifier, Modifier::empty());
+    }
+
+    #[test]
+    fn test_the_more_button_is_not_rendered_when_the_list_is_too_narrow() {
+        for width in 0..=2 {
+            with_rendered_commit_list(&["a"], width, 3, true, None, |buf, column| {
+                assert_eq!(column, None, "width {width}");
+                assert!(!buf.content.iter().any(|cell| cell.symbol() == MORE_BUTTON));
+            });
+        }
     }
 }

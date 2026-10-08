@@ -94,6 +94,7 @@ The commit list can also be operated with the mouse (enabled by default, see `ui
 
 - Left click on a commit: select the commit
 - Double click on a ref badge: switch to that ref (a remote branch is checked out as its local branch and pulled, or created as a tracking branch when the local branch does not exist)
+- Hover over a commit: show the `…` more button at the right edge of that row; rest the cursor on it, or left click it, to open the action menu for that commit
 - Wheel up/down: scroll the commit list by 3 rows
 - Drag the scrollbar thumb, or left click on the scrollbar track: scroll the commit list
 

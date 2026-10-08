@@ -6,7 +6,7 @@ use std::{
 };
 
 use ratatui::{
-    crossterm::event::{KeyCode, KeyEvent},
+    crossterm::event::{KeyCode, KeyEvent, MouseEventKind},
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style, Stylize},
     text::{Line, Span},
@@ -268,6 +268,13 @@ impl App<'_> {
                     {
                         continue;
                     }
+                    // Only the commit list uses the movement of the mouse, for the hover of its
+                    // rows
+                    if matches!(mouse.kind, MouseEventKind::Moved)
+                        && !matches!(self.view, View::List(_))
+                    {
+                        continue;
+                    }
                     self.view.handle_mouse_event(mouse);
                 }
                 AppEvent::Resize(w, h) => {
@@ -304,6 +311,17 @@ impl App<'_> {
                 }
                 AppEvent::CloseActions => {
                     self.close_actions();
+                }
+                AppEvent::MoreButtonHoverElapsed(token) => {
+                    // The dwell is turned into the menu only while the commit list is shown and
+                    // the arming is still the current one; the arming is expired otherwise
+                    let armed = match &mut self.view {
+                        View::List(view) => view.take_armed_more_button(token),
+                        _ => false,
+                    };
+                    if armed {
+                        self.open_actions();
+                    }
                 }
                 AppEvent::ExecuteGitAction(action) => {
                     self.execute_git_action(*action);
@@ -742,6 +760,11 @@ impl App<'_> {
             return;
         }
         let refs = self.repository.all_refs().into_iter().cloned().collect();
+        // The more button of the list is not shown while the menu is open, and it is not shown
+        // again until the mouse moves, so that the menu cannot be reopened by a stale hover
+        if let View::List(view) = &mut self.view {
+            view.clear_hover();
+        }
         let before = std::mem::take(&mut self.view);
         self.view = View::of_action_menu(
             before,
