@@ -29,6 +29,11 @@ pub enum AppEvent {
     CloseRefs,
     OpenActions,
     CloseActions,
+    /// The mouse rested on the more button of a commit list row for long enough.
+    ///
+    /// The token identifies the arming that started the dwell, so that a dwell that was
+    /// invalidated by the mouse leaving the button is ignored.
+    MoreButtonHoverElapsed(u64),
     ExecuteGitAction(Box<GitAction>),
     /// Switches the repository to the given ref, which was double clicked in the commit list.
     SwitchToRef(Box<Ref>),
@@ -137,38 +142,40 @@ impl EventController {
         self.stop.store(false, Ordering::Relaxed);
         let stop = self.stop.clone();
         let tx = self.tx.clone();
-        let handle = thread::spawn(move || loop {
-            if stop.load(Ordering::Relaxed) {
-                break;
-            }
-            match ratatui::crossterm::event::poll(std::time::Duration::from_millis(100)) {
-                Ok(true) => match ratatui::crossterm::event::read() {
-                    Ok(e) => match e {
-                        ratatui::crossterm::event::Event::Key(key) => {
-                            tx.send(AppEvent::Key(key));
-                        }
-                        ratatui::crossterm::event::Event::Resize(w, h) => {
-                            tx.send(AppEvent::Resize(w as usize, h as usize));
-                        }
-                        // Idle mouse movement has no effect, so it is not forwarded to avoid
-                        // redrawing the terminal on every movement.
-                        // Allow it again when hover support is implemented (see PLAN §6-A-4).
-                        ratatui::crossterm::event::Event::Mouse(mouse)
-                            if is_forwarded_mouse_event(&mouse) =>
-                        {
-                            tx.send(AppEvent::Mouse(mouse));
-                        }
-                        _ => {}
-                    },
-                    Err(e) => {
-                        panic!("Failed to read event: {e}");
-                    }
-                },
-                Ok(false) => {
-                    continue;
+        let handle = thread::spawn(move || {
+            // The cell of the last forwarded movement, used to drop repeated movement within the
+            // same cell (see `is_forwarded_mouse_event`)
+            let mut last_moved = None;
+            loop {
+                if stop.load(Ordering::Relaxed) {
+                    break;
                 }
-                Err(e) => {
-                    panic!("Failed to poll event: {e}");
+                match ratatui::crossterm::event::poll(std::time::Duration::from_millis(100)) {
+                    Ok(true) => match ratatui::crossterm::event::read() {
+                        Ok(e) => match e {
+                            ratatui::crossterm::event::Event::Key(key) => {
+                                tx.send(AppEvent::Key(key));
+                            }
+                            ratatui::crossterm::event::Event::Resize(w, h) => {
+                                tx.send(AppEvent::Resize(w as usize, h as usize));
+                            }
+                            ratatui::crossterm::event::Event::Mouse(mouse)
+                                if is_forwarded_mouse_event(&mouse, &mut last_moved) =>
+                            {
+                                tx.send(AppEvent::Mouse(mouse));
+                            }
+                            _ => {}
+                        },
+                        Err(e) => {
+                            panic!("Failed to read event: {e}");
+                        }
+                    },
+                    Ok(false) => {
+                        continue;
+                    }
+                    Err(e) => {
+                        panic!("Failed to poll event: {e}");
+                    }
                 }
             }
         });
@@ -256,11 +263,20 @@ impl EventController {
 
 /// Whether the mouse event should be forwarded to the application.
 ///
-/// Idle mouse movement has no effect, so it is not forwarded to avoid redrawing the terminal on
-/// every movement. Idle movement should be forwarded again when hover support is implemented
-/// (see PLAN §6-A-4).
-fn is_forwarded_mouse_event(mouse: &MouseEvent) -> bool {
-    !matches!(mouse.kind, MouseEventKind::Moved)
+/// Movement is used by the hover of the commit list, but a terminal may report the same cell
+/// repeatedly while the mouse stays on it. Such movement has no effect, so it is not forwarded to
+/// avoid redrawing the terminal for every report: `last_moved` holds the cell of the last
+/// forwarded movement, and movement within another cell is forwarded as usual.
+fn is_forwarded_mouse_event(mouse: &MouseEvent, last_moved: &mut Option<(u16, u16)>) -> bool {
+    if !matches!(mouse.kind, MouseEventKind::Moved) {
+        return true;
+    }
+    let position = (mouse.column, mouse.row);
+    if *last_moved == Some(position) {
+        return false;
+    }
+    *last_moved = Some(position);
+    true
 }
 
 /// Install a panic hook that disables the mouse capture before the previously installed hook runs.
@@ -459,15 +475,87 @@ mod tests {
         }
     }
 
+    fn mouse_event_at(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+        }
+    }
+
     #[test]
-    fn test_idle_mouse_movement_is_not_forwarded() {
-        assert!(!is_forwarded_mouse_event(&mouse_event(
-            MouseEventKind::Moved
-        )));
+    fn test_the_first_idle_mouse_movement_is_forwarded() {
+        let mut last_moved = None;
+        assert!(is_forwarded_mouse_event(
+            &mouse_event(MouseEventKind::Moved),
+            &mut last_moved
+        ));
+        assert_eq!(last_moved, Some((0, 0)));
+    }
+
+    #[test]
+    fn test_repeated_idle_mouse_movement_within_the_same_cell_is_not_forwarded() {
+        let mut last_moved = None;
+        assert!(is_forwarded_mouse_event(
+            &mouse_event_at(MouseEventKind::Moved, 3, 5),
+            &mut last_moved
+        ));
+        assert!(!is_forwarded_mouse_event(
+            &mouse_event_at(MouseEventKind::Moved, 3, 5),
+            &mut last_moved
+        ));
+        assert!(!is_forwarded_mouse_event(
+            &mouse_event_at(MouseEventKind::Moved, 3, 5),
+            &mut last_moved
+        ));
+    }
+
+    #[test]
+    fn test_idle_mouse_movement_to_another_cell_is_forwarded() {
+        let mut last_moved = None;
+        assert!(is_forwarded_mouse_event(
+            &mouse_event_at(MouseEventKind::Moved, 3, 5),
+            &mut last_moved
+        ));
+        assert!(is_forwarded_mouse_event(
+            &mouse_event_at(MouseEventKind::Moved, 4, 5),
+            &mut last_moved
+        ));
+        assert!(is_forwarded_mouse_event(
+            &mouse_event_at(MouseEventKind::Moved, 4, 6),
+            &mut last_moved
+        ));
+        // Moving back to a cell that was left in between is forwarded again
+        assert!(is_forwarded_mouse_event(
+            &mouse_event_at(MouseEventKind::Moved, 3, 5),
+            &mut last_moved
+        ));
+        assert_eq!(last_moved, Some((3, 5)));
+    }
+
+    #[test]
+    fn test_mouse_operations_in_the_last_moved_cell_are_forwarded() {
+        let mut last_moved = None;
+        assert!(is_forwarded_mouse_event(
+            &mouse_event_at(MouseEventKind::Moved, 3, 5),
+            &mut last_moved
+        ));
+        for kind in [
+            MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left),
+            MouseEventKind::Up(ratatui::crossterm::event::MouseButton::Left),
+            MouseEventKind::ScrollDown,
+        ] {
+            assert!(
+                is_forwarded_mouse_event(&mouse_event_at(kind, 3, 5), &mut last_moved),
+                "{kind:?}"
+            );
+        }
     }
 
     #[test]
     fn test_mouse_operations_are_forwarded() {
+        let mut last_moved = None;
         for kind in [
             MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left),
             MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Right),
@@ -476,7 +564,10 @@ mod tests {
             MouseEventKind::ScrollUp,
             MouseEventKind::ScrollDown,
         ] {
-            assert!(is_forwarded_mouse_event(&mouse_event(kind)), "{kind:?}");
+            assert!(
+                is_forwarded_mouse_event(&mouse_event(kind), &mut last_moved),
+                "{kind:?}"
+            );
         }
     }
 

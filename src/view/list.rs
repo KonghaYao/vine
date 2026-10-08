@@ -1,5 +1,6 @@
 use std::rc::Rc;
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use ratatui::{
     crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind},
@@ -11,13 +12,97 @@ use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     view::{ListRefreshViewContext, RefreshViewContext},
-    widget::commit_list::{is_double_click, BadgeClick, CommitList, CommitListState, SearchState},
+    widget::commit_list::{
+        is_double_click, BadgeClick, CommitList, CommitListState, HoveredCommit, SearchState,
+    },
 };
+
+/// How long the mouse must rest on the more button of a row before the action menu opens.
+const MORE_BUTTON_DWELL: Duration = Duration::from_millis(400);
 
 /// A scrollbar drag in progress.
 #[derive(Debug, Clone, Copy)]
 struct ScrollbarDrag {
     grab_offset: u16,
+}
+
+/// A more button that is waiting for the dwell that opens the action menu.
+#[derive(Debug, Clone, Copy)]
+struct ArmedMoreButton {
+    /// The absolute index of the commit of the row the button belongs to.
+    commit_index: usize,
+    /// The token that identifies this arming, so that the dwell of an arming the mouse left is
+    /// not mistaken for the dwell of a newer one.
+    token: u64,
+}
+
+/// The mouse hover of the commit list, used to show the more button of the hovered row.
+#[derive(Debug, Default)]
+struct MoreButtonHover {
+    /// The absolute index of the commit under the mouse, if any.
+    hovered: Option<usize>,
+    /// The more button the mouse rests on, if any.
+    armed: Option<ArmedMoreButton>,
+    /// The counter that mints the token of the next arming.
+    next_token: u64,
+}
+
+impl MoreButtonHover {
+    /// Update the hover with the commit under the mouse.
+    ///
+    /// `on_more_button` tells whether the mouse is on the more button column of that commit, which
+    /// starts the dwell that opens the action menu. Returns the token of the dwell to wait for, or
+    /// `None` when this did not start a new one.
+    fn moved(&mut self, commit_index: Option<usize>, on_more_button: bool) -> Option<u64> {
+        let Some(commit_index) = commit_index else {
+            // The mouse is not on a commit, so the button is not shown
+            self.clear();
+            return None;
+        };
+        self.hovered = Some(commit_index);
+        if !on_more_button {
+            self.armed = None;
+            return None;
+        }
+        if self
+            .armed
+            .is_some_and(|armed| armed.commit_index == commit_index)
+        {
+            // The mouse is still on the same button, so the dwell continues
+            return None;
+        }
+        let token = self.next_token;
+        self.next_token = self.next_token.wrapping_add(1);
+        self.armed = Some(ArmedMoreButton {
+            commit_index,
+            token,
+        });
+        Some(token)
+    }
+
+    /// Take the dwell with the given token, if it is still the current one.
+    ///
+    /// Returns the commit of the row of the armed button. A token that is not the current one is
+    /// stale, because the mouse left the button or armed another one in the meantime, so it is
+    /// ignored.
+    fn take(&mut self, token: u64) -> Option<usize> {
+        let armed = self.armed.filter(|armed| armed.token == token)?;
+        self.clear();
+        Some(armed.commit_index)
+    }
+
+    fn clear(&mut self) {
+        self.hovered = None;
+        self.armed = None;
+    }
+
+    fn hovered(&self) -> Option<usize> {
+        self.hovered
+    }
+
+    fn is_armed(&self) -> bool {
+        self.armed.is_some()
+    }
 }
 
 #[derive(Debug)]
@@ -28,6 +113,8 @@ pub struct ListView<'a> {
     dragging: Option<ScrollbarDrag>,
     /// The last click on a ref badge, used to detect double clicks.
     last_badge_click: Option<BadgeClick>,
+    /// The mouse hover of the list, used to show the more button of the hovered row.
+    hover: MoreButtonHover,
 
     ctx: Rc<AppContext>,
     tx: Sender,
@@ -44,6 +131,7 @@ impl<'a> ListView<'a> {
             list_area: Rect::default(),
             dragging: None,
             last_badge_click: None,
+            hover: MoreButtonHover::default(),
             ctx,
             tx,
         }
@@ -218,6 +306,7 @@ impl<'a> ListView<'a> {
             MouseEventKind::Up(MouseButton::Left) => {
                 self.dragging = None;
             }
+            MouseEventKind::Moved => self.handle_moved(mouse.column, mouse.row),
             MouseEventKind::Down(MouseButton::Right) => {
                 // The menu is opened for the commit under the cursor
                 if let Some(index) = self
@@ -236,7 +325,14 @@ impl<'a> ListView<'a> {
 
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
         self.list_area = area;
-        let commit_list = CommitList::new(self.ctx.clone()).scrollbar(true);
+        let hovered = self.hover.hovered().map(|index| HoveredCommit {
+            index,
+            armed: self.hover.is_armed(),
+        });
+        let commit_list = CommitList::new(self.ctx.clone())
+            .scrollbar(true)
+            .more_button(self.ctx.ui_config.common.mouse)
+            .hovered(hovered);
         f.render_stateful_widget(commit_list, area, self.as_mut_list_state());
     }
 
@@ -258,7 +354,8 @@ impl<'a> ListView<'a> {
     /// Select the commit on the clicked row, or handle the click on the scrollbar.
     ///
     /// A double click on the badge of a ref switches the repository to that ref; a single click
-    /// only selects the commit.
+    /// only selects the commit. A click on the more button opens the action menu of the commit
+    /// without waiting for the dwell.
     fn handle_left_click(&mut self, column: u16, row: u16) {
         // A new press always ends a previous drag
         self.dragging = None;
@@ -270,6 +367,19 @@ impl<'a> ListView<'a> {
             {
                 return;
             }
+        }
+
+        if self.more_button_at(column, row) {
+            // The click is not the start of a double click on a badge
+            self.last_badge_click = None;
+            if let Some(index) = self
+                .as_list_state()
+                .commit_index_at_row(self.list_area, row)
+            {
+                self.as_mut_list_state().select_index_without_scroll(index);
+                self.tx.send(AppEvent::OpenActions);
+            }
+            return;
         }
 
         let badge = self.as_list_state().ref_badge_at(column, row).cloned();
@@ -292,6 +402,58 @@ impl<'a> ListView<'a> {
         if let (true, Some(badge)) = (double_click, badge) {
             self.tx.send(AppEvent::SwitchToRef(Box::new(badge.r)));
         }
+    }
+
+    /// Update the hover with the position of the mouse, and start the dwell of the more button it
+    /// is resting on.
+    fn handle_moved(&mut self, column: u16, row: u16) {
+        let index = self
+            .as_list_state()
+            .commit_index_at_row(self.list_area, row);
+        let on_more_button =
+            index.is_some() && self.as_list_state().more_button_column() == Some(column);
+        if let Some(token) = self.hover.moved(index, on_more_button) {
+            self.spawn_more_button_dwell(token);
+        }
+    }
+
+    /// Wait for the dwell of the given arming in the background.
+    ///
+    /// The arming is ignored when the event comes back after the mouse left the button, which is
+    /// decided by the token when the event is handled.
+    fn spawn_more_button_dwell(&self, token: u64) {
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            thread::sleep(MORE_BUTTON_DWELL);
+            tx.send_if_running(AppEvent::MoreButtonHoverElapsed(token));
+        });
+    }
+
+    /// Whether the given screen position is on the more button of a row.
+    fn more_button_at(&self, column: u16, row: u16) -> bool {
+        self.as_list_state().more_button_column() == Some(column)
+            && self
+                .as_list_state()
+                .commit_index_at_row(self.list_area, row)
+                .is_some()
+    }
+
+    /// Open the action menu when the mouse rested on the more button of a row for long enough.
+    ///
+    /// The dwell is ignored when its token is not the current one, which means that the mouse left
+    /// the button or armed another one in the meantime.
+    pub fn take_armed_more_button(&mut self, token: u64) -> bool {
+        let Some(index) = self.hover.take(token) else {
+            return false;
+        };
+        // The menu is opened for the commit of the row, like a right click
+        self.as_mut_list_state().select_index_without_scroll(index);
+        true
+    }
+
+    /// Clear the mouse hover, so that the more button is not rendered anymore.
+    pub fn clear_hover(&mut self) {
+        self.hover.clear();
     }
 
     /// Jump the thumb to the clicked row and start dragging it.
@@ -414,5 +576,99 @@ impl<'a> ListView<'a> {
 
     pub fn reset_commit_list_with(&mut self, list_context: &ListRefreshViewContext) {
         list_context.restore(self.as_mut_list_state());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_moving_to_a_row_shows_its_more_button_without_arming_it() {
+        let mut hover = MoreButtonHover::default();
+        assert_eq!(hover.moved(Some(3), false), None);
+        assert_eq!(hover.hovered(), Some(3));
+        assert!(!hover.is_armed());
+    }
+
+    #[test]
+    fn test_moving_on_a_more_button_starts_a_dwell() {
+        let mut hover = MoreButtonHover::default();
+        let token = hover.moved(Some(3), true);
+        assert_eq!(token, Some(0));
+        assert_eq!(hover.hovered(), Some(3));
+        assert!(hover.is_armed());
+    }
+
+    #[test]
+    fn test_resting_on_the_same_more_button_keeps_the_dwell() {
+        let mut hover = MoreButtonHover::default();
+        let token = hover.moved(Some(3), true).unwrap();
+        assert_eq!(hover.moved(Some(3), true), None);
+        assert_eq!(hover.take(token), Some(3));
+    }
+
+    #[test]
+    fn test_moving_off_the_more_button_expires_the_dwell() {
+        let mut hover = MoreButtonHover::default();
+        let token = hover.moved(Some(3), true).unwrap();
+        assert_eq!(hover.moved(Some(3), false), None);
+        assert_eq!(hover.hovered(), Some(3), "the row is still hovered");
+        assert!(!hover.is_armed());
+        assert_eq!(hover.take(token), None, "the expired dwell is ignored");
+    }
+
+    #[test]
+    fn test_moving_off_the_rows_expires_the_dwell() {
+        let mut hover = MoreButtonHover::default();
+        let token = hover.moved(Some(3), true).unwrap();
+        assert_eq!(hover.moved(None, false), None);
+        assert_eq!(hover.hovered(), None);
+        assert!(!hover.is_armed());
+        assert_eq!(hover.take(token), None);
+    }
+
+    #[test]
+    fn test_moving_to_another_more_button_expires_the_previous_dwell() {
+        let mut hover = MoreButtonHover::default();
+        let first = hover.moved(Some(3), true).unwrap();
+        let second = hover.moved(Some(4), true).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            hover.take(first),
+            None,
+            "the dwell of the row that was left is ignored"
+        );
+        assert_eq!(hover.take(second), Some(4));
+    }
+
+    #[test]
+    fn test_returning_to_a_more_button_starts_a_new_dwell() {
+        let mut hover = MoreButtonHover::default();
+        let first = hover.moved(Some(3), true).unwrap();
+        hover.moved(Some(4), false);
+        let second = hover.moved(Some(3), true).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(hover.take(first), None);
+        assert_eq!(hover.take(second), Some(3));
+    }
+
+    #[test]
+    fn test_taking_a_dwell_clears_the_hover() {
+        let mut hover = MoreButtonHover::default();
+        let token = hover.moved(Some(3), true).unwrap();
+        assert_eq!(hover.take(token), Some(3));
+        assert_eq!(hover.hovered(), None);
+        assert!(!hover.is_armed());
+        assert_eq!(hover.take(token), None, "a dwell is taken only once");
+    }
+
+    #[test]
+    fn test_clearing_the_hover_expires_the_dwell() {
+        let mut hover = MoreButtonHover::default();
+        let token = hover.moved(Some(3), true).unwrap();
+        hover.clear();
+        assert_eq!(hover.hovered(), None);
+        assert_eq!(hover.take(token), None);
     }
 }
