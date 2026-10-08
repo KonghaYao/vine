@@ -23,8 +23,8 @@ use crate::{
     },
     git::{self, Commit, FileChange, Head, Ref, Repository},
     git_action::{
-        self, action_feedback, commit_menu_entries, ref_menu_entries, ActionFeedback,
-        ActionMenuContext, ActionMenuEntry, GitAction,
+        self, action_feedback, commit_menu_entries, ref_menu_entries, switch_action_for_ref,
+        write_action_error, ActionFeedback, ActionMenuContext, ActionMenuEntry, GitAction,
     },
     graph::GraphImageManager,
     keybind::KeyBind,
@@ -292,6 +292,9 @@ impl App<'_> {
                 }
                 AppEvent::ExecuteGitAction(action) => {
                     self.execute_git_action(*action);
+                }
+                AppEvent::SwitchToRef(r) => {
+                    self.switch_to_ref(*r);
                 }
                 AppEvent::RemoteActionFinished { action, result } => {
                     self.remote_action_in_progress = false;
@@ -743,8 +746,8 @@ impl App<'_> {
             Head::Detached { .. } | Head::None => None,
         };
         let menu_context = ActionMenuContext {
-            // Write actions are not available in a bare repository
-            writable: !self.repository.is_bare(),
+            writable: write_action_error(self.ctx.actions_config.enable, self.repository.is_bare())
+                .is_none(),
             remotes: &remotes,
             current_branch,
         };
@@ -800,6 +803,23 @@ impl App<'_> {
     fn close_actions(&mut self) {
         if let View::ActionMenu(ref mut view) = self.view {
             self.view = view.take_before_view();
+        }
+    }
+
+    /// Switches the repository to the ref that was double clicked in the commit list.
+    ///
+    /// Switching is not destructive, so it is executed without confirmation.
+    fn switch_to_ref(&mut self, r: Ref) {
+        // Write actions are not available when they are disabled, or in a bare repository
+        if let Some(reason) =
+            write_action_error(self.ctx.actions_config.enable, self.repository.is_bare())
+        {
+            self.ec.send(AppEvent::NotifyError(reason.into()));
+            return;
+        }
+        match switch_action_for_ref(&r) {
+            Ok(action) => self.execute_git_action(action),
+            Err(message) => self.ec.send(AppEvent::NotifyError(message)),
         }
     }
 

@@ -13,7 +13,7 @@ use serde::{
     Deserialize,
 };
 
-use crate::{git_action::GitAction, view::RefreshViewContext};
+use crate::{git::Ref, git_action::GitAction, view::RefreshViewContext};
 
 #[derive(Debug)]
 pub enum AppEvent {
@@ -30,6 +30,8 @@ pub enum AppEvent {
     OpenActions,
     CloseActions,
     ExecuteGitAction(Box<GitAction>),
+    /// Switches the repository to the given ref, which was double clicked in the commit list.
+    SwitchToRef(Box<Ref>),
     RemoteActionFinished {
         action: Box<GitAction>,
         result: Result<String, String>,

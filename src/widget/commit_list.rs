@@ -1,4 +1,5 @@
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use laurier::highlight::highlight_matched_text;
@@ -6,7 +7,7 @@ use once_cell::sync::Lazy;
 use ratatui::{
     buffer::Buffer,
     crossterm::event::{Event, KeyEvent},
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Position, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{List, ListItem, StatefulWidget, Widget},
@@ -64,6 +65,48 @@ impl ScrollbarGeometry {
 /// `divisor` must not be zero.
 fn div_round(value: usize, divisor: usize) -> usize {
     (value + divisor / 2) / divisor
+}
+
+/// The maximum delay between the two clicks of a double click.
+const DOUBLE_CLICK_DELAY: Duration = Duration::from_millis(500);
+
+/// The style of the name of a ref: reversed, so that the badge is drawn in the color of the type of
+/// the ref on the background of the terminal.
+const BADGE_MODIFIER: Modifier = Modifier::BOLD.union(Modifier::REVERSED);
+
+/// A ref that is rendered as a badge in the commit list, and where it is rendered.
+///
+/// The rectangle is recorded while rendering, so that a click can be matched to the badge under
+/// the cursor. The ref is owned by the badge, so that the rectangles of a frame stay usable until
+/// the next frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefBadge {
+    /// The area of the name of the ref, in screen coordinates.
+    pub rect: Rect,
+    /// The ref shown by the badge.
+    pub r: Ref,
+}
+
+/// A left click on a ref badge, kept to detect double clicks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BadgeClick {
+    /// The rectangle of the badge that was clicked.
+    pub rect: Rect,
+    /// When the click happened.
+    pub at: Instant,
+}
+
+/// Whether `current` completes a double click started by `previous`.
+///
+/// The two clicks must land on the same badge, which is identified by the rectangle it was
+/// rendered in, and they must be close enough in time. A click that is not on a badge is not a
+/// double click.
+pub fn is_double_click(previous: Option<BadgeClick>, current: Option<BadgeClick>) -> bool {
+    let (Some(previous), Some(current)) = (previous, current) else {
+        return false;
+    };
+    previous.rect == current.rect
+        && current.at.saturating_duration_since(previous.at) <= DOUBLE_CLICK_DELAY
 }
 
 #[derive(Debug)]
@@ -236,6 +279,9 @@ pub struct CommitListState<'a> {
     search_input: Input,
     search_matches: Vec<SearchMatch>,
 
+    /// The badges of the last rendered frame, used to hit test clicks.
+    ref_badges: Vec<RefBadge>,
+
     selected: usize,
     offset: usize,
     total: usize,
@@ -266,6 +312,7 @@ impl<'a> CommitListState<'a> {
             search_options,
             search_input: Input::default(),
             search_matches: vec![SearchMatch::default(); total],
+            ref_badges: Vec::new(),
             selected: 0,
             offset: 0,
             total,
@@ -525,6 +572,18 @@ impl<'a> CommitListState<'a> {
         }
         let index = self.offset.checked_add((row - list_area.y) as usize)?;
         (index < self.total).then_some(index)
+    }
+
+    /// Replaces the recorded ref badges, which are collected while rendering.
+    pub fn set_ref_badges(&mut self, badges: Vec<RefBadge>) {
+        self.ref_badges = badges;
+    }
+
+    /// The ref badge at the given screen position, if the position is on one.
+    pub fn ref_badge_at(&self, column: u16, row: u16) -> Option<&RefBadge> {
+        self.ref_badges
+            .iter()
+            .find(|badge| badge.rect.contains(Position::new(column, row)))
     }
 
     /// The scrollbar geometry, or `None` when the scrollbar is not shown.
@@ -908,6 +967,9 @@ impl<'a> StatefulWidget for CommitList<'a> {
         );
         let chunks = Layout::horizontal(constraints).split(list_area);
 
+        // The badges are collected while rendering, so that a click can be matched to the badge
+        // that was rendered under the cursor
+        let mut ref_badges = Vec::new();
         for (i, col) in self.ctx.ui_config.list.columns.iter().enumerate() {
             match col {
                 UserListColumnType::Graph => {
@@ -917,7 +979,7 @@ impl<'a> StatefulWidget for CommitList<'a> {
                     self.render_marker(buf, chunks[i], state);
                 }
                 UserListColumnType::Subject => {
-                    self.render_subject(buf, chunks[i], state);
+                    ref_badges = self.render_subject(buf, chunks[i], state);
                 }
                 UserListColumnType::Name => {
                     self.render_name(buf, chunks[i], state);
@@ -930,6 +992,7 @@ impl<'a> StatefulWidget for CommitList<'a> {
                 }
             }
         }
+        state.set_ref_badges(ref_badges);
 
         if self.scrollbar {
             self.render_scrollbar(buf, scrollbar_area, state);
@@ -996,20 +1059,34 @@ impl CommitList<'_> {
         Widget::render(List::new(items), area, buf)
     }
 
-    fn render_subject(&self, buf: &mut Buffer, area: Rect, state: &CommitListState) {
+    /// Renders the subject column, and returns the badges of the refs it contains.
+    fn render_subject(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        state: &CommitListState,
+    ) -> Vec<RefBadge> {
         let max_width = (area.width as usize).saturating_sub(2);
         if area.is_empty() || max_width == 0 {
-            return;
+            return Vec::new();
         }
+        let mut badges = Vec::new();
         let items: Vec<ListItem> = self
             .rendering_commit_info_iter(state)
             .map(|(i, commit_info)| {
-                let mut spans = refs_spans(
+                let refs_spans = refs_spans(
                     commit_info,
                     state.head,
                     &state.search_matches[state.offset + i].refs,
                     &self.ctx.color_theme,
                 );
+                for name in &refs_spans.names {
+                    badges.push(RefBadge {
+                        rect: ref_badge_rect(area, i, name.offset, name.width),
+                        r: name.r.clone(),
+                    });
+                }
+                let mut spans = refs_spans.spans;
                 let ref_spans_width: usize = spans.iter().map(|s| s.width()).sum();
                 let max_width = max_width.saturating_sub(ref_spans_width);
                 let commit = commit_info.commit;
@@ -1041,6 +1118,7 @@ impl CommitList<'_> {
             })
             .collect();
         Widget::render(List::new(items), area, buf);
+        badges
     }
 
     fn render_name(&self, buf: &mut Buffer, area: Rect, state: &CommitListState) {
@@ -1169,41 +1247,64 @@ impl CommitList<'_> {
     }
 }
 
+/// The spans of the refs of a commit, and where the name of each ref is rendered.
+struct RefsSpans<'a> {
+    spans: Vec<Span<'a>>,
+    /// The position of the name of each ref within `spans`.
+    names: Vec<RefNameSpan<'a>>,
+}
+
+/// The position of the name of a ref within the spans of the refs of a commit.
+struct RefNameSpan<'a> {
+    /// The width of the text that precedes the name, in cells.
+    offset: usize,
+    /// The width of the name, in cells.
+    width: usize,
+    r: &'a Ref,
+}
+
+/// The spans of the refs of a commit.
+///
+/// The name of each ref is rendered as a reversed badge, colored by the type of the ref, and the
+/// badges are separated by spaces.
 fn refs_spans<'a>(
     commit_info: &'a CommitInfo,
     head: &'a Head,
     refs_matches: &'a FxHashMap<String, SearchMatchPosition>,
     color_theme: &'a ColorTheme,
-) -> Vec<Span<'a>> {
+) -> RefsSpans<'a> {
     let refs = &commit_info.refs;
 
     if refs.len() == 1 {
         if let Ref::Stash { name, .. } = refs[0] {
-            return vec![
-                Span::raw(name).fg(color_theme.list_ref_stash_fg).bold(),
-                Span::raw(" "),
-            ];
+            return RefsSpans {
+                spans: vec![
+                    Span::raw(name).fg(color_theme.list_ref_stash_fg).bold(),
+                    Span::raw(" "),
+                ],
+                names: Vec::new(),
+            };
         }
     }
 
-    let ref_spans: Vec<(Vec<Span>, &String)> = refs
+    let ref_spans: Vec<(Vec<Span>, &Ref, usize)> = refs
         .iter()
-        .filter_map(|r| match r {
+        .filter_map(|r| match *r {
             Ref::Branch { name, .. } => {
                 let fg = color_theme.list_ref_branch_fg;
-                Some((name, fg))
+                Some((name, fg, *r))
             }
             Ref::RemoteBranch { name, .. } => {
                 let fg = color_theme.list_ref_remote_branch_fg;
-                Some((name, fg))
+                Some((name, fg, *r))
             }
             Ref::Tag { name, .. } => {
                 let fg = color_theme.list_ref_tag_fg;
-                Some((name, fg))
+                Some((name, fg, *r))
             }
             Ref::Stash { .. } => None,
         })
-        .map(|(name, fg)| {
+        .map(|(name, fg, r)| {
             let spans = refs_matches
                 .get(name)
                 .map(|pos| {
@@ -1211,47 +1312,60 @@ fn refs_spans<'a>(
                         name.into(),
                         pos.clone(),
                         fg,
-                        Modifier::BOLD,
+                        BADGE_MODIFIER,
                         color_theme,
                         false,
                     )
                 })
-                .unwrap_or_else(|| vec![Span::raw(name).fg(fg).bold()]);
-            (spans, name)
+                .unwrap_or_else(|| vec![Span::raw(name).fg(fg).add_modifier(BADGE_MODIFIER)]);
+            let width: usize = spans.iter().map(Span::width).sum();
+            (spans, r, width)
         })
         .collect();
 
-    let mut spans = vec![Span::raw("(").fg(color_theme.list_ref_paren_fg).bold()];
+    let mut spans: Vec<Span> = Vec::new();
+    let mut names: Vec<RefNameSpan> = Vec::new();
 
     if let Head::Detached { target } = head {
         if commit_info.commit.commit_hash == *target {
             spans.push(Span::raw("HEAD").fg(color_theme.list_head_fg).bold());
-            if !ref_spans.is_empty() {
-                spans.push(Span::raw(", ").fg(color_theme.list_ref_paren_fg).bold());
-            }
+            // The separator is also pushed when there is no ref, so that the subject does not
+            // stick to the marker
+            spans.push(separator(color_theme));
         }
     }
 
-    for (i, ss) in ref_spans.into_iter().enumerate() {
-        let (ref_spans, ref_name) = ss;
+    for (ref_spans, r, width) in ref_spans {
         if let Head::Branch { name } = head {
-            if ref_name == name {
+            // A tag can have the same name as the branch that HEAD points to
+            if matches!(r, Ref::Branch { .. }) && r.name() == name {
                 spans.push(Span::raw("HEAD -> ").fg(color_theme.list_head_fg).bold());
             }
         }
+        let offset: usize = spans.iter().map(Span::width).sum();
         spans.extend(ref_spans);
-        if i < refs.len() - 1 {
-            spans.push(Span::raw(", ").fg(color_theme.list_ref_paren_fg).bold());
-        }
+        names.push(RefNameSpan { offset, width, r });
+        spans.push(separator(color_theme));
     }
 
-    spans.push(Span::raw(") ").fg(color_theme.list_ref_paren_fg).bold());
+    RefsSpans { spans, names }
+}
 
-    if spans.len() == 2 {
-        spans.clear(); // contains only "(" and ")", so clear it
-    }
+/// The space that separates the refs of a commit.
+fn separator(color_theme: &ColorTheme) -> Span<'static> {
+    Span::raw(" ").fg(color_theme.list_ref_paren_fg)
+}
 
-    spans
+/// The area of the name of a ref in the subject column.
+///
+/// The name is rendered at `offset` cells from the start of the row, after the space that precedes
+/// the refs of the commit. The name is clipped to the column, because the list truncates the items
+/// to the width of the column.
+fn ref_badge_rect(area: Rect, row: usize, offset: usize, width: usize) -> Rect {
+    let row = area.top().saturating_add(row as u16);
+    let left = area.left().saturating_add(1).saturating_add(offset as u16);
+    let right = left.saturating_add(width as u16).min(area.right());
+    Rect::new(left, row, right.saturating_sub(left), 1)
 }
 
 fn highlighted_spans(
@@ -2806,5 +2920,339 @@ mod tests {
             Constraint::Length(6),  // Graph
         ];
         assert_eq!(actual, expected);
+    }
+
+    fn commit(hash: u8) -> Commit {
+        Commit {
+            commit_hash: CommitHash::from(format!("{hash:040x}").as_str()),
+            subject: "subject".into(),
+            ..Commit::default()
+        }
+    }
+
+    fn branch(name: &str) -> Ref {
+        Ref::Branch {
+            name: name.into(),
+            target: CommitHash::default(),
+        }
+    }
+
+    fn remote_branch(name: &str) -> Ref {
+        Ref::RemoteBranch {
+            name: name.into(),
+            target: CommitHash::default(),
+        }
+    }
+
+    fn tag(name: &str) -> Ref {
+        Ref::Tag {
+            name: name.into(),
+            target: CommitHash::default(),
+        }
+    }
+
+    fn text_of(spans: &[Span]) -> String {
+        spans.iter().map(|span| span.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn test_refs_are_rendered_as_badges_separated_by_spaces() {
+        let commit = commit(1);
+        let refs = [branch("main"), remote_branch("origin/main"), tag("v1.0")];
+        let info = CommitInfo::new(&commit, refs.iter().collect(), Color::Reset);
+        let head = Head::Branch {
+            name: "main".into(),
+        };
+        let theme = ColorTheme::default();
+        let matches = FxHashMap::default();
+
+        let spans = refs_spans(&info, &head, &matches, &theme);
+
+        let text = text_of(&spans.spans);
+        assert_eq!(text, "HEAD -> main origin/main v1.0 ");
+        assert!(
+            !text.contains([',', '(', ')', ';']),
+            "the refs are separated by spaces, not by commas or brackets"
+        );
+    }
+
+    #[test]
+    fn test_a_ref_badge_is_reversed_and_keeps_the_color_of_its_type() {
+        let commit = commit(1);
+        let refs = [branch("main"), remote_branch("origin/main"), tag("v1.0")];
+        let info = CommitInfo::new(&commit, refs.iter().collect(), Color::Reset);
+        let head = Head::Branch {
+            name: "main".into(),
+        };
+        let theme = ColorTheme::default();
+        let matches = FxHashMap::default();
+
+        let spans = refs_spans(&info, &head, &matches, &theme);
+
+        let badges: Vec<(String, Color)> = spans
+            .spans
+            .iter()
+            .filter(|span| span.style.add_modifier.contains(Modifier::REVERSED))
+            .map(|span| (span.content.to_string(), span.style.fg.unwrap()))
+            .collect();
+        assert_eq!(
+            badges,
+            vec![
+                ("main".to_string(), theme.list_ref_branch_fg),
+                ("origin/main".to_string(), theme.list_ref_remote_branch_fg),
+                ("v1.0".to_string(), theme.list_ref_tag_fg),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_the_head_of_a_detached_commit_is_separated_from_the_refs_by_a_space() {
+        let commit = commit(1);
+        let refs = [tag("v1.0")];
+        let info = CommitInfo::new(&commit, refs.iter().collect(), Color::Reset);
+        let head = Head::Detached {
+            target: commit.commit_hash.clone(),
+        };
+        let theme = ColorTheme::default();
+        let matches = FxHashMap::default();
+
+        let spans = refs_spans(&info, &head, &matches, &theme);
+
+        assert_eq!(text_of(&spans.spans), "HEAD v1.0 ");
+        assert_eq!(spans.names.len(), 1);
+        assert_eq!(spans.names[0].offset, "HEAD ".len());
+        assert_eq!(spans.names[0].width, "v1.0".len());
+    }
+
+    #[test]
+    fn test_the_head_of_a_detached_commit_without_refs_is_followed_by_a_space() {
+        let commit = commit(1);
+        let info = CommitInfo::new(&commit, vec![], Color::Reset);
+        let head = Head::Detached {
+            target: commit.commit_hash.clone(),
+        };
+        let theme = ColorTheme::default();
+        let matches = FxHashMap::default();
+
+        let spans = refs_spans(&info, &head, &matches, &theme);
+
+        // The subject must not stick to the marker of a detached HEAD
+        assert_eq!(text_of(&spans.spans), "HEAD ");
+        assert!(spans.names.is_empty());
+    }
+
+    #[test]
+    fn test_only_the_branch_that_head_points_to_gets_the_head_prefix() {
+        let commit = commit(1);
+        // a tag can have the same name as the branch that HEAD points to
+        let refs = [branch("main"), tag("main")];
+        let info = CommitInfo::new(&commit, refs.iter().collect(), Color::Reset);
+        let head = Head::Branch {
+            name: "main".into(),
+        };
+        let theme = ColorTheme::default();
+        let matches = FxHashMap::default();
+
+        let spans = refs_spans(&info, &head, &matches, &theme);
+
+        assert_eq!(text_of(&spans.spans), "HEAD -> main main ");
+        assert_eq!(spans.names.len(), 2, "both refs are badges");
+    }
+
+    #[test]
+    fn test_a_commit_without_a_ref_has_no_span() {
+        let commit = commit(1);
+        let info = CommitInfo::new(&commit, Vec::new(), Color::Reset);
+        let head = Head::Branch {
+            name: "main".into(),
+        };
+        let theme = ColorTheme::default();
+        let matches = FxHashMap::default();
+
+        let spans = refs_spans(&info, &head, &matches, &theme);
+
+        assert!(text_of(&spans.spans).is_empty());
+        assert!(spans.names.is_empty());
+    }
+
+    #[test]
+    fn test_a_single_stash_keeps_its_own_format() {
+        let commit = commit(1);
+        let refs = [Ref::Stash {
+            name: "stash@{0}".into(),
+            message: "WIP".into(),
+            target: CommitHash::default(),
+        }];
+        let info = CommitInfo::new(&commit, refs.iter().collect(), Color::Reset);
+        let head = Head::None;
+        let theme = ColorTheme::default();
+        let matches = FxHashMap::default();
+
+        let spans = refs_spans(&info, &head, &matches, &theme);
+
+        assert_eq!(text_of(&spans.spans), "stash@{0} ");
+        assert_eq!(spans.spans[0].style.fg, Some(theme.list_ref_stash_fg));
+        assert!(!spans.spans[0]
+            .style
+            .add_modifier
+            .contains(Modifier::REVERSED));
+        assert!(spans.names.is_empty(), "a stash cannot be switched to");
+    }
+
+    #[test]
+    fn test_a_searched_ref_is_still_a_single_badge() {
+        let commit = commit(1);
+        let refs = [branch("feature")];
+        let info = CommitInfo::new(&commit, refs.iter().collect(), Color::Reset);
+        let head = Head::None;
+        let theme = ColorTheme::default();
+        let matches = FxHashMap::from_iter([(
+            "feature".to_string(),
+            SearchMatchPosition::new((0..3).collect()),
+        )]);
+
+        let spans = refs_spans(&info, &head, &matches, &theme);
+
+        // the highlighted name is split into several spans, but it stays one badge
+        assert!(spans.spans.len() > 1, "the match splits the name");
+        assert!(spans
+            .spans
+            .iter()
+            .filter(|span| span.content.as_ref() != " ")
+            .all(|span| span.style.add_modifier.contains(Modifier::REVERSED)));
+        assert_eq!(spans.names.len(), 1);
+        assert_eq!(spans.names[0].offset, 0);
+        assert_eq!(spans.names[0].width, "feature".len());
+    }
+
+    #[test]
+    fn test_ref_badge_rect_of_a_row_with_several_refs() {
+        let area = Rect::new(10, 3, 40, 5);
+        // the item starts with a space, then the badges
+        assert_eq!(
+            ref_badge_rect(area, 0, 0, 4),
+            Rect::new(11, 3, 4, 1),
+            "the first badge starts after the space that precedes the refs"
+        );
+        assert_eq!(
+            ref_badge_rect(area, 1, 5, 11),
+            Rect::new(16, 4, 11, 1),
+            "the second badge follows the first one and its separator"
+        );
+    }
+
+    #[test]
+    fn test_ref_badge_rect_is_clipped_to_the_column() {
+        let area = Rect::new(10, 3, 20, 5);
+        // the badge starts at 16 and would end at 31, but the column ends at 30
+        assert_eq!(ref_badge_rect(area, 0, 5, 15), Rect::new(16, 3, 14, 1));
+        // a badge that is completely beyond the column is not visible
+        assert_eq!(ref_badge_rect(area, 0, 30, 5), Rect::new(41, 3, 0, 1));
+    }
+
+    #[test]
+    fn test_ref_badge_at_finds_the_badge_under_the_cursor() {
+        with_commit_list_state(&["a", "b"], |state| {
+            state.set_ref_badges(vec![
+                RefBadge {
+                    rect: Rect::new(11, 3, 4, 1),
+                    r: branch("main"),
+                },
+                RefBadge {
+                    rect: Rect::new(16, 3, 11, 1),
+                    r: remote_branch("origin/main"),
+                },
+            ]);
+
+            assert_eq!(
+                state.ref_badge_at(11, 3).map(|badge| badge.r.name()),
+                Some("main")
+            );
+            assert_eq!(
+                state.ref_badge_at(14, 3).map(|badge| badge.r.name()),
+                Some("main"),
+                "the last cell of a badge is part of it"
+            );
+            assert_eq!(
+                state.ref_badge_at(16, 3).map(|badge| badge.r.name()),
+                Some("origin/main")
+            );
+            assert_eq!(
+                state.ref_badge_at(26, 3).map(|badge| badge.r.name()),
+                Some("origin/main")
+            );
+
+            // the space between two badges
+            assert!(state.ref_badge_at(15, 3).is_none());
+            // outside of the badges
+            assert!(state.ref_badge_at(10, 3).is_none());
+            assert!(state.ref_badge_at(27, 3).is_none());
+            // another row
+            assert!(state.ref_badge_at(11, 4).is_none());
+            assert!(state.ref_badge_at(11, 2).is_none());
+        });
+    }
+
+    #[test]
+    fn test_ref_badge_at_without_a_recorded_badge() {
+        with_commit_list_state(&["a"], |state| {
+            assert!(state.ref_badge_at(11, 3).is_none());
+        });
+    }
+
+    fn badge_click(rect: Rect, at: Instant) -> Option<BadgeClick> {
+        Some(BadgeClick { rect, at })
+    }
+
+    #[test]
+    fn test_a_second_click_on_the_same_badge_is_a_double_click() {
+        let rect = Rect::new(11, 3, 4, 1);
+        let now = Instant::now();
+        assert!(is_double_click(
+            badge_click(rect, now),
+            badge_click(rect, now + Duration::from_millis(1))
+        ));
+        assert!(
+            is_double_click(
+                badge_click(rect, now),
+                badge_click(rect, now + DOUBLE_CLICK_DELAY)
+            ),
+            "a click at the end of the delay is still a double click"
+        );
+    }
+
+    #[test]
+    fn test_a_click_on_another_badge_is_not_a_double_click() {
+        let now = Instant::now();
+        assert!(!is_double_click(
+            badge_click(Rect::new(11, 3, 4, 1), now),
+            badge_click(Rect::new(16, 3, 11, 1), now)
+        ));
+        assert!(
+            !is_double_click(
+                badge_click(Rect::new(11, 3, 4, 1), now),
+                badge_click(Rect::new(11, 4, 4, 1), now)
+            ),
+            "the same badge on another row is another badge"
+        );
+    }
+
+    #[test]
+    fn test_a_click_after_the_delay_is_not_a_double_click() {
+        let rect = Rect::new(11, 3, 4, 1);
+        let now = Instant::now();
+        assert!(!is_double_click(
+            badge_click(rect, now),
+            badge_click(rect, now + DOUBLE_CLICK_DELAY + Duration::from_millis(1))
+        ));
+    }
+
+    #[test]
+    fn test_a_click_that_is_not_on_a_badge_is_not_a_double_click() {
+        let rect = Rect::new(11, 3, 4, 1);
+        let now = Instant::now();
+        assert!(!is_double_click(badge_click(rect, now), None));
+        assert!(!is_double_click(None, badge_click(rect, now)));
+        assert!(!is_double_click(None, None));
     }
 }

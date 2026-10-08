@@ -1,4 +1,5 @@
 use std::rc::Rc;
+use std::time::Instant;
 
 use ratatui::{
     crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind},
@@ -10,7 +11,7 @@ use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     view::{ListRefreshViewContext, RefreshViewContext},
-    widget::commit_list::{CommitList, CommitListState, SearchState},
+    widget::commit_list::{is_double_click, BadgeClick, CommitList, CommitListState, SearchState},
 };
 
 /// A scrollbar drag in progress.
@@ -25,6 +26,8 @@ pub struct ListView<'a> {
 
     list_area: Rect,
     dragging: Option<ScrollbarDrag>,
+    /// The last click on a ref badge, used to detect double clicks.
+    last_badge_click: Option<BadgeClick>,
 
     ctx: Rc<AppContext>,
     tx: Sender,
@@ -40,6 +43,7 @@ impl<'a> ListView<'a> {
             commit_list_state: Some(commit_list_state),
             list_area: Rect::default(),
             dragging: None,
+            last_badge_click: None,
             ctx,
             tx,
         }
@@ -252,6 +256,9 @@ impl<'a> ListView<'a> {
     }
 
     /// Select the commit on the clicked row, or handle the click on the scrollbar.
+    ///
+    /// A double click on the badge of a ref switches the repository to that ref; a single click
+    /// only selects the commit.
     fn handle_left_click(&mut self, column: u16, row: u16) {
         // A new press always ends a previous drag
         self.dragging = None;
@@ -264,12 +271,26 @@ impl<'a> ListView<'a> {
                 return;
             }
         }
+
+        let badge = self.as_list_state().ref_badge_at(column, row).cloned();
+        let click = badge.as_ref().map(|badge| BadgeClick {
+            rect: badge.rect,
+            at: Instant::now(),
+        });
+        let double_click = is_double_click(self.last_badge_click, click);
+        // A double click is not the start of another one, so it is forgotten
+        self.last_badge_click = if double_click { None } else { click };
+
         // Clicking a row selects that commit; the viewport does not move
         if let Some(index) = self
             .as_list_state()
             .commit_index_at_row(self.list_area, row)
         {
             self.as_mut_list_state().select_index_without_scroll(index);
+        }
+
+        if let (true, Some(badge)) = (double_click, badge) {
+            self.tx.send(AppEvent::SwitchToRef(Box::new(badge.r)));
         }
     }
 

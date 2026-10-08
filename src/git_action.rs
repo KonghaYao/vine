@@ -32,6 +32,11 @@ pub enum GitAction {
     SwitchBranch {
         name: String,
     },
+    /// `git switch -c <name> --track <start_point>`
+    SwitchTrackingBranch {
+        name: String,
+        start_point: String,
+    },
     /// `git merge <name>`
     MergeBranch {
         name: String,
@@ -148,6 +153,9 @@ impl GitAction {
             | GitAction::RunUserCommand { .. } => return None,
             GitAction::CreateBranch { name, target } => vec!["switch", "-c", name, target.as_str()],
             GitAction::SwitchBranch { name } => vec!["switch", name],
+            GitAction::SwitchTrackingBranch { name, start_point } => {
+                vec!["switch", "-c", name, "--track", start_point]
+            }
             GitAction::MergeBranch { name } => vec!["merge", name],
             GitAction::RebaseBranch { name } => vec!["rebase", name],
             GitAction::RenameBranch { old_name, new_name } => {
@@ -230,6 +238,9 @@ impl GitAction {
             GitAction::RunUserCommand { number } => format!("Executed user command {number}"),
             GitAction::CreateBranch { name, .. } => format!("Created branch '{name}'"),
             GitAction::SwitchBranch { name } => format!("Switched to branch '{name}'"),
+            GitAction::SwitchTrackingBranch { name, start_point } => {
+                format!("Switched to a new branch '{name}' tracking '{start_point}'")
+            }
             GitAction::MergeBranch { name } => format!("Merged '{name}' into the current branch"),
             GitAction::RebaseBranch { name } => format!("Rebased onto '{name}'"),
             GitAction::RenameBranch { old_name, new_name } => {
@@ -406,6 +417,52 @@ impl ActionMenuContext<'_> {
     fn is_current_branch(&self, name: &str) -> bool {
         self.current_branch == Some(name)
     }
+}
+
+/// The reason why write actions cannot be performed, or `None` when they can.
+///
+/// The actions are disabled by the configuration, and a bare repository has no working tree to
+/// write to.
+pub fn write_action_error(actions_enabled: bool, is_bare: bool) -> Option<&'static str> {
+    if !actions_enabled {
+        Some("Actions are disabled in the configuration")
+    } else if is_bare {
+        Some("Actions are not available in a bare repository")
+    } else {
+        None
+    }
+}
+
+/// The action that switches the repository to the given ref.
+///
+/// The ref is checked out: a local branch directly, a remote branch into a new local branch that
+/// tracks it, and a tag detached at the commit it points to.
+pub fn switch_action_for_ref(r: &Ref) -> Result<GitAction, String> {
+    match r {
+        Ref::Branch { name, .. } => Ok(GitAction::SwitchBranch { name: name.clone() }),
+        Ref::RemoteBranch { name, .. } => match remote_branch_local_name(name) {
+            Some(local_name) => Ok(GitAction::SwitchTrackingBranch {
+                name: local_name.into(),
+                start_point: name.clone(),
+            }),
+            None => Err(format!(
+                "Cannot determine the local branch that tracks '{name}'"
+            )),
+        },
+        Ref::Tag { target, .. } => Ok(GitAction::CheckoutDetached {
+            commit_hash: target.clone(),
+        }),
+        Ref::Stash { name, .. } => Err(format!("Cannot switch to the stash '{name}'")),
+    }
+}
+
+/// The name of the local branch that tracks the given remote branch.
+///
+/// The remote name is the first component of the name of a remote branch, so `origin/main` is
+/// tracked by the local branch `main`, and `origin/feature/x` by `feature/x`.
+fn remote_branch_local_name(remote_branch: &str) -> Option<&str> {
+    let (_, local_name) = remote_branch.split_once('/')?;
+    (!local_name.is_empty()).then_some(local_name)
 }
 
 /// Builds the action menu for the given commit.
@@ -821,6 +878,20 @@ mod tests {
             }
             .git_args(),
             Some(vec!["branch".into(), "-D".into(), "old".into()])
+        );
+        assert_eq!(
+            GitAction::SwitchTrackingBranch {
+                name: "main".into(),
+                start_point: "origin/main".into()
+            }
+            .git_args(),
+            Some(vec![
+                "switch".into(),
+                "-c".into(),
+                "main".into(),
+                "--track".into(),
+                "origin/main".into()
+            ])
         );
     }
 
@@ -1678,6 +1749,117 @@ mod tests {
         assert!(ref_menu_entries(&branch, &context).is_empty());
         assert!(ref_menu_entries(&tag, &context).is_empty());
         assert!(ref_menu_entries(&stash, &context).is_empty());
+    }
+
+    #[test]
+    fn test_switch_action_for_a_branch_checks_it_out() {
+        let branch = Ref::Branch {
+            name: "feature/x".into(),
+            target: commit_hash(1),
+        };
+        let action = switch_action_for_ref(&branch).unwrap();
+        assert_eq!(
+            action,
+            GitAction::SwitchBranch {
+                name: "feature/x".into()
+            }
+        );
+        assert_eq!(
+            action.git_args(),
+            Some(vec!["switch".into(), "feature/x".into()])
+        );
+    }
+
+    #[test]
+    fn test_switch_action_for_a_remote_branch_creates_a_tracking_branch() {
+        let remote_branch = Ref::RemoteBranch {
+            name: "origin/main".into(),
+            target: commit_hash(1),
+        };
+        let action = switch_action_for_ref(&remote_branch).unwrap();
+        assert_eq!(
+            action,
+            GitAction::SwitchTrackingBranch {
+                name: "main".into(),
+                start_point: "origin/main".into(),
+            }
+        );
+        assert_eq!(
+            action.git_args(),
+            Some(vec![
+                "switch".into(),
+                "-c".into(),
+                "main".into(),
+                "--track".into(),
+                "origin/main".into()
+            ])
+        );
+    }
+
+    #[test]
+    fn test_switch_action_for_a_remote_branch_with_a_slash_in_its_name() {
+        let remote_branch = Ref::RemoteBranch {
+            name: "upstream/feature/x".into(),
+            target: commit_hash(1),
+        };
+        let action = switch_action_for_ref(&remote_branch).unwrap();
+        assert_eq!(
+            action,
+            GitAction::SwitchTrackingBranch {
+                name: "feature/x".into(),
+                start_point: "upstream/feature/x".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_switch_action_for_a_remote_branch_without_a_local_name() {
+        let remote_branch = Ref::RemoteBranch {
+            name: "origin".into(),
+            target: commit_hash(1),
+        };
+        assert!(switch_action_for_ref(&remote_branch).is_err());
+    }
+
+    #[test]
+    fn test_switch_action_for_a_tag_checks_the_commit_out_detached() {
+        let tag = Ref::Tag {
+            name: "v1.0".into(),
+            target: commit_hash(3),
+        };
+        let action = switch_action_for_ref(&tag).unwrap();
+        assert_eq!(
+            action,
+            GitAction::CheckoutDetached {
+                commit_hash: commit_hash(3)
+            }
+        );
+        assert_eq!(
+            action.git_args(),
+            Some(vec![
+                "switch".into(),
+                "--detach".into(),
+                commit_hash(3).as_str().into()
+            ])
+        );
+    }
+
+    #[test]
+    fn test_switch_action_for_a_stash_is_not_possible() {
+        let stash = Ref::Stash {
+            name: "stash@{0}".into(),
+            message: "WIP".into(),
+            target: commit_hash(1),
+        };
+        assert!(switch_action_for_ref(&stash).is_err());
+    }
+
+    #[test]
+    fn test_write_action_error_is_none_only_when_the_actions_are_available() {
+        assert_eq!(write_action_error(true, false), None);
+        assert!(write_action_error(false, false).is_some());
+        assert!(write_action_error(true, true).is_some());
+        assert!(write_action_error(false, true).is_some());
     }
 
     #[test]
