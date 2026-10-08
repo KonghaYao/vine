@@ -72,6 +72,7 @@ enum ImageProtocolType {
     Iterm,
     Kitty,
     KittyUnicode,
+    Ascii,
 }
 
 impl From<Option<ImageProtocolType>> for protocol::ImageProtocol {
@@ -83,6 +84,7 @@ impl From<Option<ImageProtocolType>> for protocol::ImageProtocol {
             Some(ImageProtocolType::KittyUnicode) => protocol::ImageProtocol::KittyUnicode {
                 tmux: protocol::detect_tmux(),
             },
+            Some(ImageProtocolType::Ascii) => protocol::ImageProtocol::Ascii,
             None => protocol::auto_detect(),
         }
     }

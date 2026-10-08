@@ -6,17 +6,29 @@ use std::{
 use base64::Engine;
 use ratatui::style::{Color, Style};
 
-// By default assume the Iterm2 is the best protocol to use for all terminals *unless* an env
-// variable is set that suggests the terminal is probably Kitty.
+// By default use the best protocol that the current terminal is known to support, and fall back
+// to the ASCII renderer for anything else so that the graph is always visible.
 pub fn auto_detect() -> ImageProtocol {
-    if detect_kitty_graphics_protocol() {
-        if detect_tmux() {
-            ImageProtocol::KittyUnicode { tmux: true }
-        } else {
-            ImageProtocol::Kitty
-        }
-    } else {
+    decide_protocol(
+        detect_kitty_graphics_protocol(),
+        detect_iterm2_graphics_protocol(),
+        detect_tmux(),
+    )
+}
+
+fn decide_protocol(kitty: bool, iterm: bool, tmux: bool) -> ImageProtocol {
+    if tmux {
+        // Image protocols only work inside tmux when it forwards the escapes to the outer
+        // terminal, which cannot be detected reliably. Fall back to the ASCII graph by default;
+        // the kitty Unicode placeholder protocol can still be enabled explicitly with
+        // `--protocol kitty-unicode` when `allow-passthrough` is set.
+        ImageProtocol::Ascii
+    } else if kitty {
+        ImageProtocol::Kitty
+    } else if iterm {
         ImageProtocol::Iterm2
+    } else {
+        ImageProtocol::Ascii
     }
 }
 
@@ -30,6 +42,17 @@ fn detect_kitty_graphics_protocol() -> bool {
     || env::var("GHOSTTY_RESOURCES_DIR").is_ok()
 }
 
+fn detect_iterm2_graphics_protocol() -> bool {
+    // iTerm2 and the terminals that implement the same inline images protocol
+    // https://iterm2.com/documentation-terminal-window.html
+    env::var("TERM_PROGRAM").is_ok_and(|term_program| {
+        matches!(
+            term_program.as_str(),
+            "iTerm.app" | "WezTerm" | "vscode" | "mintty"
+        )
+    }) || env::var("LC_TERMINAL").is_ok_and(|lc_terminal| lc_terminal == "iTerm2")
+}
+
 pub fn detect_tmux() -> bool {
     env::var("TMUX").is_ok_and(|tmux| !tmux.is_empty())
         || env::var("TERM").is_ok_and(|term| term.starts_with("tmux"))
@@ -41,6 +64,7 @@ pub enum ImageProtocol {
     Iterm2,
     Kitty,
     KittyUnicode { tmux: bool },
+    Ascii,
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +75,14 @@ pub struct PreparedImageCell {
 }
 
 impl PreparedImageCell {
+    pub fn new(symbol: String, style: Style) -> Self {
+        Self {
+            symbol,
+            style,
+            skip: false,
+        }
+    }
+
     pub fn symbol(&self) -> &str {
         &self.symbol
     }
@@ -71,6 +103,13 @@ pub struct PreparedImage {
 }
 
 impl PreparedImage {
+    pub fn from_cells(cells: Vec<PreparedImageCell>) -> Self {
+        Self {
+            cells,
+            upload_data: None,
+        }
+    }
+
     pub fn cells(&self) -> &[PreparedImageCell] {
         &self.cells
     }
@@ -88,6 +127,9 @@ impl ImageProtocol {
             ImageProtocol::KittyUnicode { tmux } => {
                 return kitty_unicode_prepare(bytes, cell_width, image_id, *tmux);
             }
+            // The ASCII graph is built from the graph edges themselves instead of an image,
+            // so this is not called; return an empty image to keep the match exhaustive.
+            ImageProtocol::Ascii => return PreparedImage::from_cells(Vec::new()),
         };
         let mut cells = Vec::with_capacity(cell_width);
         cells.push(PreparedImageCell {
@@ -110,7 +152,7 @@ impl ImageProtocol {
 
     pub fn clear_line(&self, y: u16) {
         match self {
-            ImageProtocol::Iterm2 => {}
+            ImageProtocol::Iterm2 | ImageProtocol::Ascii => {}
             ImageProtocol::Kitty => kitty_clear_line(y),
             ImageProtocol::KittyUnicode { .. } => {}
         }
@@ -118,7 +160,7 @@ impl ImageProtocol {
 
     pub fn clear(&self) {
         match self {
-            ImageProtocol::Iterm2 => {}
+            ImageProtocol::Iterm2 | ImageProtocol::Ascii => {}
             ImageProtocol::Kitty => kitty_clear(),
             ImageProtocol::KittyUnicode { .. } => {}
         }
@@ -126,7 +168,7 @@ impl ImageProtocol {
 
     pub fn delete_images(&self, image_ids: &[u32]) -> Result<(), std::io::Error> {
         match self {
-            ImageProtocol::Iterm2 | ImageProtocol::Kitty => Ok(()),
+            ImageProtocol::Iterm2 | ImageProtocol::Kitty | ImageProtocol::Ascii => Ok(()),
             ImageProtocol::KittyUnicode { tmux } => kitty_unicode_delete_images(image_ids, *tmux),
         }
     }
@@ -593,5 +635,65 @@ fn passthrough_escapes(tmux: bool) -> (&'static str, &'static str, &'static str)
         ("\x1bPtmux;", "\x1b\x1b", "\x1b\\")
     } else {
         ("", "\x1b", "")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use super::*;
+
+    fn assert_protocol(actual: ImageProtocol, expected: ImageProtocol) {
+        match (actual, expected) {
+            (ImageProtocol::Iterm2, ImageProtocol::Iterm2)
+            | (ImageProtocol::Kitty, ImageProtocol::Kitty)
+            | (ImageProtocol::Ascii, ImageProtocol::Ascii) => {}
+            (
+                ImageProtocol::KittyUnicode { tmux: actual },
+                ImageProtocol::KittyUnicode { tmux: expected },
+            ) if actual == expected => {}
+            (actual, expected) => panic!("expected {expected:?}, got {actual:?}"),
+        }
+    }
+
+    #[rstest]
+    // Inside tmux the ASCII graph is always used, since whether the outer terminal can receive
+    // image protocols through tmux cannot be detected.
+    #[case(true, false, true, ImageProtocol::Ascii)]
+    #[case(true, true, true, ImageProtocol::Ascii)]
+    #[case(false, true, true, ImageProtocol::Ascii)]
+    #[case(false, false, true, ImageProtocol::Ascii)]
+    // Outside tmux, use the terminal's image protocol when it can be identified.
+    #[case(true, false, false, ImageProtocol::Kitty)]
+    #[case(true, true, false, ImageProtocol::Kitty)]
+    #[case(false, true, false, ImageProtocol::Iterm2)]
+    // Otherwise fall back to the ASCII graph.
+    #[case(false, false, false, ImageProtocol::Ascii)]
+    fn test_decide_protocol(
+        #[case] kitty: bool,
+        #[case] iterm: bool,
+        #[case] tmux: bool,
+        #[case] expected: ImageProtocol,
+    ) {
+        assert_protocol(decide_protocol(kitty, iterm, tmux), expected);
+    }
+
+    #[test]
+    fn test_prepare_image_for_image_protocols() {
+        let bytes = b"dummy";
+        for protocol in [ImageProtocol::Iterm2, ImageProtocol::Kitty] {
+            let image = protocol.prepare_image(bytes, 3, 1);
+            assert_eq!(image.cells().len(), 3);
+            assert!(!image.cells()[0].symbol().is_empty());
+            assert!(!image.cells()[0].skip());
+            assert!(image.cells()[1..].iter().all(|c| c.skip()));
+        }
+    }
+
+    #[test]
+    fn test_prepare_image_for_ascii() {
+        let image = ImageProtocol::Ascii.prepare_image(b"dummy", 3, 1);
+        assert!(image.cells().is_empty());
     }
 }
