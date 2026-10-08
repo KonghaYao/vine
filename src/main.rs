@@ -30,7 +30,7 @@ mod test_git;
 #[path = "tests/watch.rs"]
 mod watch_tests;
 
-use std::{path::Path, rc::Rc};
+use std::{env, path::Path, rc::Rc};
 
 use app::{App, Ret};
 use clap::{Parser, ValueEnum};
@@ -78,6 +78,43 @@ enum ImageProtocolType {
     Kitty,
     KittyUnicode,
     Ascii,
+}
+
+/// The environment variable that forces the image protocol, taking precedence over the config file.
+const PROTOCOL_ENV_NAME: &str = "SERIE_PROTOCOL";
+
+fn parse_protocol_type(value: &str) -> Option<ImageProtocolType> {
+    ImageProtocolType::from_str(value.trim(), true).ok()
+}
+
+/// The protocol type forced by `$SERIE_PROTOCOL`, if any.
+///
+/// This takes precedence over the `protocol` config option, so that the mode can be forced per
+/// environment (e.g. `SERIE_PROTOCOL=ascii` in a shell on a remote host) without editing the config.
+fn protocol_type_from_env() -> Result<Option<ImageProtocolType>> {
+    protocol_type_from_value(env::var(PROTOCOL_ENV_NAME).ok())
+}
+
+fn protocol_type_from_value(value: Option<String>) -> Result<Option<ImageProtocolType>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    parse_protocol_type(value).map(Some).ok_or_else(|| {
+        let possible_values = ImageProtocolType::value_variants()
+            .iter()
+            .filter_map(|v| v.to_possible_value())
+            .map(|v| v.get_name().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "invalid value for ${PROTOCOL_ENV_NAME}: {value:?} (possible values: {possible_values})"
+        )
+        .into()
+    })
 }
 
 impl From<Option<ImageProtocolType>> for protocol::ImageProtocol {
@@ -163,7 +200,11 @@ fn main() -> Result<()> {
     let keybind = keybind::KeyBind::new(keybind_patch);
 
     let max_count = args.max_count;
-    let image_protocol = args.protocol.or(core_config.option.protocol).into();
+    let image_protocol = args
+        .protocol
+        .or(protocol_type_from_env()?)
+        .or(core_config.option.protocol)
+        .into();
     let order = args.order.or(core_config.option.order).into();
     let graph_width = args.graph_width.or(core_config.option.graph_width);
     let graph_style = args.graph_style.or(core_config.option.graph_style).into();
@@ -248,4 +289,44 @@ fn main() -> Result<()> {
     ec.disable_mouse_capture();
     ratatui::restore();
     ret.map_err(Into::into)
+}
+
+#[cfg(test)]
+mod protocol_env_tests {
+    use super::*;
+
+    #[test]
+    fn test_protocol_type_from_value_accepts_the_option_values() {
+        assert_eq!(
+            protocol_type_from_value(Some("ascii".into())).unwrap(),
+            Some(ImageProtocolType::Ascii)
+        );
+        assert_eq!(
+            protocol_type_from_value(Some("ASCII".into())).unwrap(),
+            Some(ImageProtocolType::Ascii)
+        );
+        assert_eq!(
+            protocol_type_from_value(Some(" kitty-unicode ".into())).unwrap(),
+            Some(ImageProtocolType::KittyUnicode)
+        );
+        assert_eq!(
+            protocol_type_from_value(Some("auto".into())).unwrap(),
+            Some(ImageProtocolType::Auto)
+        );
+    }
+
+    #[test]
+    fn test_protocol_type_from_value_ignores_unset_and_empty_values() {
+        assert_eq!(protocol_type_from_value(None).unwrap(), None);
+        assert_eq!(protocol_type_from_value(Some("".into())).unwrap(), None);
+        assert_eq!(protocol_type_from_value(Some("  ".into())).unwrap(), None);
+    }
+
+    #[test]
+    fn test_protocol_type_from_value_reports_an_invalid_value() {
+        let err = protocol_type_from_value(Some("image".into())).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("SERIE_PROTOCOL"), "{msg}");
+        assert!(msg.contains("kitty-unicode"), "{msg}");
+    }
 }
