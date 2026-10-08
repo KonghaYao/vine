@@ -274,6 +274,11 @@ fn build_single_graph_row_image(
 // box-drawing character colored with the same palette as the rendered image. One graph column
 // occupies one cell, or two cells when the cell width type is double; the second cell is a
 // filler that carries the horizontal lines across the gap between the columns.
+//
+// Box-drawing characters are used for the nodes as well as for the lines (`ascii_commit_symbol`),
+// since they are the only characters that terminal fonts draw up to the edges of the cell. They
+// have the same East Asian width class as the box-drawing characters of the lines themselves, so
+// the widths assumed by the layout do not change.
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct AsciiDirections {
@@ -309,6 +314,43 @@ fn ascii_symbol(d: AsciiDirections, graph_style: GraphStyle) -> char {
             '\u{2500}' // ─
         }
         (false, false, false, false) => ' ',
+    }
+}
+
+/// The symbol of a commit cell.
+///
+/// The commit is drawn as the junction of the lines that reach its cell, like [`ascii_symbol`],
+/// but with heavy strokes on the vertical so that the node stands out from the plain lines: a
+/// commit at the middle of a branch is a thick segment of the vertical line (┃), a merge or a
+/// branch point is a thick vertical with the light horizontal lines that join it (┠ ┨ ╂ ┰ ┸), and
+/// the tip of a branch is a thick half segment that ends where the branch ends (╹ ╻).
+///
+/// Box-drawing characters are used because they are the only characters that terminal fonts draw
+/// up to the edges of the cell (and a little beyond, so that the lines of the rows touch): the
+/// circle that is used for the node of the graph image covers only about the half of the cell
+/// height, which leaves a visible gap with the lines of the rows above and below.
+fn ascii_commit_symbol(d: AsciiDirections) -> char {
+    match (d.up, d.down, d.left, d.right) {
+        // Vertical heavy, horizontal light.
+        (true, true, true, true) => '\u{2542}',   // ╂
+        (true, true, true, false) => '\u{2528}',  // ┨
+        (true, true, false, true) => '\u{2520}',  // ┠
+        (true, false, true, true) => '\u{2538}',  // ┸
+        (false, true, true, true) => '\u{2530}',  // ┰
+        (true, true, false, false) => '\u{2503}', // ┃
+        (true, false, true, false) => '\u{251a}', // ┚
+        (true, false, false, true) => '\u{2516}', // ┖
+        (false, true, true, false) => '\u{2512}', // ┒
+        (false, true, false, true) => '\u{250e}', // ┎
+        // The line ends at the commit, so the stroke reaches the connected edge of the cell only.
+        (true, false, false, false) => '\u{2579}', // ╹
+        (false, true, false, false) => '\u{257b}', // ╻
+        (false, false, true, true) => '\u{2501}',  // ━
+        (false, false, true, false) => '\u{2578}', // ╸
+        (false, false, false, true) => '\u{257a}', // ╺
+        // A commit that no line reaches (a repository with a single commit) has nothing to be
+        // connected to, so it keeps the plain node dot.
+        (false, false, false, false) => '\u{25cf}', // ●
     }
 }
 
@@ -441,13 +483,9 @@ fn render_ascii_row(
     let merge_from_right = is_merge_at_row && columns[pos_x].dirs.right;
 
     let commit_style = Style::default().fg(image_color_to_ratatui(image_params.edge_color(pos_x)));
-    // A merge commit is drawn as an open circle, so that the arrows pointing into it read as the
-    // directions the merged branches come from.
-    let commit_symbol = if is_merge_at_row {
-        '\u{25cb}' // ○
-    } else {
-        '\u{25cf}' // ●
-    };
+    // The commit is the junction of the lines that reach it, drawn with heavier strokes so that it
+    // can be told apart from the lines (and so that the vertical line stays continuous through it).
+    let commit_symbol = ascii_commit_symbol(columns[pos_x].dirs);
 
     let double_width = matches!(cell_width_type, CellWidthType::Double);
     let mut cells = Vec::with_capacity(if double_width {
@@ -1564,6 +1602,53 @@ mod tests {
     }
 
     #[rstest]
+    // A commit with lines in both vertical directions is a thick segment of the vertical line.
+    #[case(directions(true, true, false, false), '┃')]
+    // The lines that join a merge or a branch point are kept, and the vertical stays heavy.
+    #[case(directions(true, true, true, true), '╂')]
+    #[case(directions(true, true, true, false), '┨')]
+    #[case(directions(true, true, false, true), '┠')]
+    #[case(directions(true, false, true, true), '┸')]
+    #[case(directions(false, true, true, true), '┰')]
+    #[case(directions(true, false, true, false), '┚')]
+    #[case(directions(true, false, false, true), '┖')]
+    #[case(directions(false, true, true, false), '┒')]
+    #[case(directions(false, true, false, true), '┎')]
+    // A tip of a branch only draws the half of the stroke that reaches the line it continues.
+    #[case(directions(true, false, false, false), '╹')]
+    #[case(directions(false, true, false, false), '╻')]
+    #[case(directions(false, false, true, true), '━')]
+    #[case(directions(false, false, true, false), '╸')]
+    #[case(directions(false, false, false, true), '╺')]
+    // A commit that no line reaches keeps the node dot.
+    #[case(directions(false, false, false, false), '●')]
+    fn test_ascii_commit_symbol(#[case] d: AsciiDirections, #[case] expected: char) {
+        assert_eq!(ascii_commit_symbol(d), expected);
+    }
+
+    #[test]
+    fn test_ascii_commit_symbol_connects_the_vertical_line() {
+        // The node of a commit in the middle of a branch, and the node of a merge, are drawn with
+        // a box-drawing character: its glyph reaches the top and the bottom edge of the cell, like
+        // the │ of the rows above and below, so that the vertical line stays continuous through
+        // the node. A circle (●) covers only the middle half of the cell and leaves a gap.
+        let line = ascii_symbol(directions(true, true, false, false), GraphStyle::Rounded);
+        for d in [
+            directions(true, true, false, false),
+            directions(true, true, true, true),
+            directions(true, true, true, false),
+            directions(true, true, false, true),
+        ] {
+            let symbol = ascii_commit_symbol(d);
+            assert!(
+                ('\u{2500}'..='\u{257f}').contains(&symbol),
+                "the node {symbol:?} is not a box-drawing character"
+            );
+            assert_ne!(symbol, line);
+        }
+    }
+
+    #[rstest]
     // T-junctions and the cross are the same in both styles.
     #[case(directions(true, true, true, true), GraphStyle::Rounded, '┼')]
     #[case(directions(true, true, true, false), GraphStyle::Rounded, '┤')]
@@ -1608,7 +1693,7 @@ mod tests {
             GraphStyle::Rounded,
             CellWidthType::Single,
         );
-        assert_eq!(symbols(&image), "│  ●");
+        assert_eq!(symbols(&image), "│  ┃");
     }
 
     #[test]
@@ -1628,7 +1713,7 @@ mod tests {
             GraphStyle::Rounded,
             CellWidthType::Single,
         );
-        assert_eq!(symbols(&image), "╰●─╯");
+        assert_eq!(symbols(&image), "╰┰─╯");
     }
 
     #[test]
@@ -1649,7 +1734,7 @@ mod tests {
             GraphStyle::Rounded,
             CellWidthType::Single,
         );
-        assert_eq!(symbols(&image), "╭─○╮");
+        assert_eq!(symbols(&image), "╭─┸╮");
     }
 
     #[test]
@@ -1669,7 +1754,7 @@ mod tests {
             GraphStyle::Angular,
             CellWidthType::Single,
         );
-        assert_eq!(symbols(&image), "┌─○┐");
+        assert_eq!(symbols(&image), "┌─┸┐");
     }
 
     #[test]
@@ -1691,7 +1776,7 @@ mod tests {
             GraphStyle::Rounded,
             CellWidthType::Double,
         );
-        assert_eq!(symbols(&image), "╰─●───╯ ");
+        assert_eq!(symbols(&image), "╰─┰───╯ ");
     }
 
     #[test]
@@ -1711,7 +1796,7 @@ mod tests {
             GraphStyle::Rounded,
             CellWidthType::Double,
         );
-        assert_eq!(symbols(&image), "╭──>○ ");
+        assert_eq!(symbols(&image), "╭──>┨ ");
     }
 
     #[test]
@@ -1731,7 +1816,7 @@ mod tests {
             GraphStyle::Rounded,
             CellWidthType::Double,
         );
-        assert_eq!(symbols(&image), "○<──╮ ");
+        assert_eq!(symbols(&image), "┠<──╮ ");
     }
 
     #[test]
@@ -1752,20 +1837,21 @@ mod tests {
             GraphStyle::Rounded,
             CellWidthType::Double,
         );
-        assert_eq!(symbols(&image), "╭──>○<╮ ");
+        assert_eq!(symbols(&image), "╭──>┸<╮ ");
     }
 
     #[rstest]
     // Cells that are shared by more than one edge are drawn as a single junction character.
-    #[case(vec![(Vertical, 0, 0), (Vertical, 0, 0)], "│  ●")]
-    #[case(vec![(Vertical, 0, 0), (Horizontal, 0, 0)], "┼  ●")]
-    #[case(vec![(Vertical, 0, 0), (Right, 0, 0)], "├  ●")]
-    #[case(vec![(Vertical, 0, 0), (Left, 0, 0)], "┤  ●")]
-    #[case(vec![(Horizontal, 0, 0), (Down, 0, 0)], "┬  ●")]
-    #[case(vec![(Horizontal, 0, 0), (Up, 0, 0)], "┴  ●")]
-    #[case(vec![(Horizontal, 0, 0), (LeftBottom, 0, 0)], "┴  ●")]
-    // A corner of a merge is composed as well, and makes the whole row a merge row.
-    #[case(vec![(Vertical, 0, 0), (RightTop, 0, 0)], "┤  ○")]
+    #[case(vec![(Vertical, 0, 0), (Vertical, 0, 0)], "│  ╹")]
+    #[case(vec![(Vertical, 0, 0), (Horizontal, 0, 0)], "┼  ╹")]
+    #[case(vec![(Vertical, 0, 0), (Right, 0, 0)], "├  ╹")]
+    #[case(vec![(Vertical, 0, 0), (Left, 0, 0)], "┤  ╹")]
+    #[case(vec![(Horizontal, 0, 0), (Down, 0, 0)], "┬  ╹")]
+    #[case(vec![(Horizontal, 0, 0), (Up, 0, 0)], "┴  ╹")]
+    #[case(vec![(Horizontal, 0, 0), (LeftBottom, 0, 0)], "┴  ╹")]
+    // A corner of a merge is composed as well. The commit itself only has the line that goes up
+    // to its child, so it is drawn as the tip of that line.
+    #[case(vec![(Vertical, 0, 0), (RightTop, 0, 0)], "┤  ╹")]
     fn test_render_ascii_row_composes_the_edges_of_a_cell(
         #[case] cell_edges: Vec<(EdgeType, usize, usize)>,
         #[case] expected: &str,
@@ -1787,7 +1873,7 @@ mod tests {
             GraphStyle::Rounded,
             CellWidthType::Single,
         );
-        assert_eq!(symbols(&image), "┼ ●");
+        assert_eq!(symbols(&image), "┼ ╹");
         assert_eq!(
             image.cells()[0].style().fg,
             Some(Color::Rgb(224, 108, 118)) // branch color 0
@@ -1801,7 +1887,7 @@ mod tests {
             GraphStyle::Rounded,
             CellWidthType::Single,
         );
-        assert_eq!(symbols(&image), "─ ●");
+        assert_eq!(symbols(&image), "─ ╹");
         assert_eq!(
             image.cells()[0].style().fg,
             Some(Color::Rgb(152, 195, 121)) // branch color 1
@@ -1820,7 +1906,7 @@ mod tests {
         let mut double =
             render_test_ascii_row(1, 2, &edges, GraphStyle::Rounded, CellWidthType::Double);
         assert_eq!(double.cells().len(), 4);
-        assert_eq!(symbols(&double), "│ ● ");
+        assert_eq!(symbols(&double), "│ ┃ ");
         assert!(double.take_upload_data().is_none());
     }
 
@@ -1882,11 +1968,11 @@ mod tests {
 
         assert_eq!(
             symbols(manager.prepared_image(&commits[0].commit_hash)),
-            "●╯"
+            "┖╯"
         );
         assert_eq!(
             symbols(manager.prepared_image(&commits[1].commit_hash)),
-            "│●"
+            "│┃"
         );
     }
 }

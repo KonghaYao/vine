@@ -14,7 +14,7 @@
           "properties": {
             "protocol": {
               "type": "string",
-              "description": "The protocol used to render the commit graph. 'auto' uses the best mode supported by the current terminal, falling back to 'ascii' when no image protocol can be detected. The value specified in the command line argument takes precedence.",
+              "description": "The protocol used to render the commit graph. 'ascii' uses Unicode box-drawing characters and works in any terminal; an image protocol is used only when it is specified. 'auto' uses the best mode supported by the current terminal, falling back to 'ascii' when no image protocol can be detected. The value specified in the command line argument takes precedence, and the SERIE_PROTOCOL environment variable takes precedence over this value.",
               "enum": [
                 "auto",
                 "iterm",
@@ -22,7 +22,7 @@
                 "kitty-unicode",
                 "ascii"
               ],
-              "default": "auto"
+              "default": "ascii"
             },
             "order": {
               "type": "string",

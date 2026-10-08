@@ -59,7 +59,7 @@ pub fn detect_tmux() -> bool {
         || env::var("TERM_PROGRAM").is_ok_and(|term_program| term_program == "tmux")
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageProtocol {
     Iterm2,
     Kitty,

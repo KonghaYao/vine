@@ -13,19 +13,22 @@ The protocol used to render the commit graph.
 
 _Possible values:_ `auto`, `iterm`, `kitty`, `kitty-unicode`, `ascii`
 
+- `ascii`: Unicode box-drawing characters (`┃ ─ ╭ ╮ ╰ ╯`), which works in any terminal. This is the default.
 - `iterm`: [iTerm2 inline images protocol](https://iterm2.com/documentation-images.html)
 - `kitty`: [kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
 - `kitty-unicode`: kitty graphics protocol with [Unicode placeholders](https://sw.kovidgoyal.net/kitty/graphics-protocol/#unicode-placeholders), which also works under tmux
-- `ascii`: Unicode box-drawing characters (`● │ ─ ╭ ╮ ╰ ╯`), which works in any terminal
+- `auto`: picks the best supported mode for the current terminal:
 
-By default `auto` picks the best supported mode for the current terminal:
+  1. Inside tmux (`TMUX`, `TERM=tmux*` or `TERM_PROGRAM=tmux`), the ASCII graph is used.
+     - Whether tmux forwards the image escapes to the outer terminal cannot be detected, so the always-working ASCII graph is used instead.
+     - To use the image graph inside tmux, enable `set -g allow-passthrough on` in tmux.conf (version 3.2+) and specify `kitty-unicode` explicitly.
+  2. Otherwise, the kitty graphics protocol is used if `KITTY_WINDOW_ID`, `GHOSTTY_RESOURCES_DIR`, or `TERM=xterm-ghostty` is set.
+  3. Otherwise, the iTerm2 inline images protocol is used if `TERM_PROGRAM` is `iTerm.app`, `WezTerm`, `mintty`, or `vscode`, or if `LC_TERMINAL=iTerm2`.
+  4. Otherwise, the ASCII graph is used.
 
-1. Inside tmux (`TMUX`, `TERM=tmux*` or `TERM_PROGRAM=tmux`), the ASCII graph is used.
-   - Whether tmux forwards the image escapes to the outer terminal cannot be detected, so the always-working ASCII graph is used instead.
-   - To use the image graph inside tmux, enable `set -g allow-passthrough on` in tmux.conf (version 3.2+) and specify `kitty-unicode` explicitly.
-2. Otherwise, the kitty graphics protocol is used if `KITTY_WINDOW_ID`, `GHOSTTY_RESOURCES_DIR`, or `TERM=xterm-ghostty` is set.
-3. Otherwise, the iTerm2 inline images protocol is used if `TERM_PROGRAM` is `iTerm.app`, `WezTerm`, `mintty`, or `vscode`, or if `LC_TERMINAL=iTerm2`.
-4. Otherwise, the ASCII graph is used.
+Without this option, `$SERIE_PROTOCOL`, and the `protocol` config option, the `ascii` graph is used in any terminal: an image protocol is never selected implicitly, and `auto` has to be specified explicitly to let Serie pick one from the terminal environment.
+The mode can also be forced with the `$SERIE_PROTOCOL` environment variable, e.g. `SERIE_PROTOCOL=kitty`, which is useful when the automatic detection does not fit the environment (ssh sessions, unknown terminal emulators, ...).
+This option takes precedence over it, and it takes precedence over the `protocol` config option.
 
 The mode can also be forced with the `$SERIE_PROTOCOL` environment variable, e.g. `SERIE_PROTOCOL=ascii`, which is useful when the automatic detection does not fit the environment (ssh sessions, unknown terminal emulators, ...).
 This option takes precedence over it, and it takes precedence over the `protocol` config option.
