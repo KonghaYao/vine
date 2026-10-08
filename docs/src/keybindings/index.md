@@ -128,8 +128,8 @@ actions available for the selected commit or ref:
 
 - Commit: Copy commit hash, Show commit details, Checkout (detached), Create branch..., Create tag...,
   Cherry-pick, Revert, Reset (soft/mixed/hard), Merge into current branch, Merge another branch,
-  Rebase onto another branch, Run user command, and the actions of the refs attached to the commit
-  (as a submenu).
+  Rebase onto another branch, Run user command, the actions of the refs attached to the commit
+  (as a submenu), and the column switches below.
   - Merge into current branch merges the branch of the commit (the local branches first, then the
     remote branches) into the branch that is checked out. The branch that is checked out itself is
     not listed, since merging it into itself does nothing, and neither are the tags.
@@ -138,6 +138,25 @@ actions available for the selected commit or ref:
 - Remote branch: Merge into current branch, Rebase current onto this branch.
 - Tag: Checkout (detached), Delete, Push to a remote.
 - Stash: Apply, Pop, Drop.
+
+##### Column switches
+
+The menu of a commit ends with a horizontal line followed by three switches that show or hide the
+columns of the commit list:
+
+- `Date` — the author date of the commits.
+- `Hash` — the short hash of the commits.
+- `Author` — the name of the author of the commits.
+
+A switch is checked (`✓`) while its column is shown and unchecked (a blank mark) while it is
+hidden. Selecting a switch with <kbd>Enter</kbd> or a left click toggles the column: the commit list
+is updated immediately, and the new value is written to `ui.commit_list` in the config file, so the
+choice is kept for the next session. The menu stays open, so several columns can be toggled in a
+row; press <kbd>Esc</kbd> to close it.
+
+The switches are not git actions, so they are listed even when `actions.enable` is disabled or the
+repository is bare. The separator and the switches are only in the menu of a commit, and the cursor
+of the keyboard steps over the separator, which is not an action.
 
 Navigation keys (<kbd>Up/Down</kbd>, <kbd>Enter</kbd>, <kbd>Esc</kbd>) are fixed and are not
 customizable.

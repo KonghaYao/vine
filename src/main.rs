@@ -30,7 +30,7 @@ mod test_git;
 #[path = "tests/watch.rs"]
 mod watch_tests;
 
-use std::{env, path::Path, rc::Rc};
+use std::{cell::Cell, env, path::Path, rc::Rc};
 
 use app::{App, Ret};
 use clap::{Parser, ValueEnum};
@@ -234,6 +234,9 @@ fn main() -> Result<()> {
 
     let graph_color_set = color::GraphColorSet::new(&graph_config.color);
 
+    // The commit list is rendered with this value, which the action menu changes while it runs
+    let commit_list_config = ui_config.commit_list;
+
     let ctx = Rc::new(app::AppContext {
         keybind,
         core_config,
@@ -241,6 +244,7 @@ fn main() -> Result<()> {
         actions_config,
         color_theme,
         image_protocol,
+        commit_list_config: Cell::new(commit_list_config),
     });
 
     let ec = event::EventController::init(ctx.ui_config.common.mouse);

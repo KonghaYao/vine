@@ -18,6 +18,7 @@ use serde::{
 };
 
 use crate::{
+    config::CommitListColumn,
     git::Ref,
     git_action::GitAction,
     view::RefreshViewContext,
@@ -48,6 +49,8 @@ pub enum AppEvent {
     /// invalidated by the mouse leaving the button is ignored.
     MoreButtonHoverElapsed(u64),
     ExecuteGitAction(Box<GitAction>),
+    /// Shows or hides a column of the commit list, which is chosen from the action menu.
+    ToggleCommitListColumn(CommitListColumn),
     /// Switches the repository to the given ref, which was double clicked in the commit list.
     SwitchToRef(Box<Ref>),
     RemoteActionFinished {

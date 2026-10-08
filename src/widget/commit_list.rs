@@ -1037,20 +1037,21 @@ impl<'a> StatefulWidget for CommitList<'a> {
             split_more_button_column(list_area, self.more_button);
         state.set_more_button_column(more_button_column);
 
+        let columns = self.visible_columns();
         let constraints = calc_cell_widths(
             columns_area.width,
             self.ctx.ui_config.list.subject_min_width,
             state.graph_area_cell_width(),
             self.ctx.ui_config.list.name_width,
             self.ctx.ui_config.list.date_width,
-            &self.ctx.ui_config.list.columns,
+            &columns,
         );
         let chunks = Layout::horizontal(constraints).split(columns_area);
 
         // The badges are collected while rendering, so that a click can be matched to the badge
         // that was rendered under the cursor
         let mut ref_badges = Vec::new();
-        for (i, col) in self.ctx.ui_config.list.columns.iter().enumerate() {
+        for (i, col) in columns.iter().enumerate() {
             match col {
                 UserListColumnType::Graph => {
                     self.render_graph(buf, chunks[i], state);
@@ -1087,6 +1088,22 @@ impl<'a> StatefulWidget for CommitList<'a> {
 impl CommitList<'_> {
     fn update_state(&self, area: Rect, state: &mut CommitListState) {
         state.update_height(area.height as usize);
+    }
+
+    /// The columns of the list, without the ones that are hidden by the action menu.
+    ///
+    /// The hidden columns are dropped before the layout is calculated, so that the other columns
+    /// keep their place and their width.
+    fn visible_columns(&self) -> Vec<UserListColumnType> {
+        let commit_list_config = self.ctx.commit_list_config.get();
+        self.ctx
+            .ui_config
+            .list
+            .columns
+            .iter()
+            .filter(|column| !commit_list_config.hides(column))
+            .cloned()
+            .collect()
     }
 
     /// Render the more button bar, which shows the more button of the row under the mouse.
@@ -1657,13 +1674,14 @@ fn calc_cell_widths(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::path::PathBuf;
 
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
     use crate::{
         color::GraphColorSet,
-        config::{ActionsConfig, CoreConfig, GraphColorConfig, UiConfig},
+        config::{ActionsConfig, CoreConfig, GraphColorConfig, UiCommitListConfig, UiConfig},
         git::Repository,
         graph::{calc_graph, CellWidthType, GraphImageWidthMode, GraphStyle},
         keybind::KeyBind,
@@ -1686,6 +1704,12 @@ mod tests {
                 ..Commit::default()
             })
             .collect();
+        with_commits(commits, f)
+    }
+
+    /// The state of a list of the given commits, for the tests.
+    fn with_commits<R>(commits: Vec<Commit>, f: impl FnOnce(&mut CommitListState<'_>) -> R) -> R {
+        let count = commits.len();
         let commit_hashes = commits.iter().map(|c| c.commit_hash.clone()).collect();
         let commit_map = commits
             .into_iter()
@@ -1726,7 +1750,7 @@ mod tests {
             SearchOptions::default(),
             0,
         );
-        state.reset_height(subjects.len());
+        state.reset_height(count);
         f(&mut state)
     }
 
@@ -3812,13 +3836,20 @@ mod tests {
     }
 
     fn test_app_context() -> Rc<AppContext> {
+        test_app_context_with(UiCommitListConfig::default())
+    }
+
+    /// The context of a commit list whose optional columns are set as given.
+    fn test_app_context_with(commit_list_config: UiCommitListConfig) -> Rc<AppContext> {
+        let ui_config = UiConfig::default();
         Rc::new(AppContext {
             keybind: KeyBind::default(),
             core_config: CoreConfig::default(),
-            ui_config: UiConfig::default(),
+            ui_config,
             actions_config: ActionsConfig::default(),
             color_theme: ColorTheme::default(),
             image_protocol: ImageProtocol::Iterm2,
+            commit_list_config: Cell::new(commit_list_config),
         })
     }
 
@@ -4196,5 +4227,90 @@ mod tests {
                 }
             },
         );
+    }
+
+    /// The row of a one commit list rendered with the given column visibility.
+    fn rendered_row(commit: &Commit, commit_list_config: UiCommitListConfig) -> String {
+        let commits = vec![commit.clone()];
+        with_commits(commits, |state| {
+            let area = Rect::new(0, 0, 60, 1);
+            let mut buf = Buffer::empty(area);
+            state.ensure_visible_graph_uploaded();
+            let commit_list = CommitList::new(test_app_context_with(commit_list_config));
+            StatefulWidget::render(commit_list, area, &mut buf, state);
+            (area.left()..area.right())
+                .map(|x| buf[(x, area.top())].symbol())
+                .collect()
+        })
+    }
+
+    #[test]
+    fn test_the_columns_hidden_from_the_action_menu_are_not_rendered() {
+        let commit = Commit {
+            commit_hash: CommitHash::from("abcdef0123456789abcdef0123456789abcdef01"),
+            subject: "the subject".into(),
+            author_name: "the author".into(),
+            author_date: "2024-01-02T03:04:05+00:00"
+                .parse::<chrono::DateTime<chrono::FixedOffset>>()
+                .unwrap(),
+            ..Commit::default()
+        };
+        let short_hash = commit.commit_hash.as_short_hash().to_string();
+        let date = commit
+            .author_date
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d")
+            .to_string();
+
+        let all = rendered_row(&commit, UiCommitListConfig::default());
+        for expected in ["the subject", "the author", &short_hash, &date] {
+            assert!(all.contains(expected), "{expected:?} is rendered: {all:?}");
+        }
+        let subject_column = all.find("the subject").unwrap();
+
+        let cases = [
+            (
+                UiCommitListConfig {
+                    show_date: false,
+                    ..Default::default()
+                },
+                date.as_str(),
+            ),
+            (
+                UiCommitListConfig {
+                    show_hash: false,
+                    ..Default::default()
+                },
+                short_hash.as_str(),
+            ),
+            (
+                UiCommitListConfig {
+                    show_author: false,
+                    ..Default::default()
+                },
+                "the author",
+            ),
+        ];
+        for (commit_list_config, hidden) in cases {
+            let row = rendered_row(&commit, commit_list_config);
+            assert!(
+                !row.contains(hidden),
+                "{hidden:?} is not rendered when its column is hidden: {row:?}"
+            );
+            assert!(
+                row.contains("the subject"),
+                "the subject is still rendered: {row:?}"
+            );
+            assert_eq!(
+                row.find("the subject"),
+                Some(subject_column),
+                "the columns before the hidden one do not move: {row:?}"
+            );
+            assert_eq!(
+                row[..subject_column],
+                all[..subject_column],
+                "the graph and the marker are not shifted: {row:?}"
+            );
+        }
     }
 }

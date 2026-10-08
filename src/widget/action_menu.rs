@@ -10,6 +10,13 @@ use ratatui::{
 
 use crate::{app::AppContext, git_action::ActionMenuEntry};
 
+/// The horizontal line that separates two groups of entries of the menu.
+const SEPARATOR: &str = "─";
+/// The mark in front of an entry that shows a column which is shown.
+const CHECKED_MARK: &str = "✓";
+/// The mark in front of an entry that shows a column which is hidden.
+const UNCHECKED_MARK: &str = " ";
+
 /// Where the popup of the action menu is placed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ActionMenuPlacement {
@@ -60,29 +67,49 @@ impl ActionMenuState {
         self.entries.get(self.selected)
     }
 
+    /// Whether the entry with the given index can be selected.
+    ///
+    /// A separator is part of the menu, but it is not an action, so it is never selected.
+    fn is_selectable(&self, index: usize) -> bool {
+        self.entries
+            .get(index)
+            .is_some_and(ActionMenuEntry::is_selectable)
+    }
+
     pub fn select_next(&mut self) {
-        if self.selected + 1 < self.entries.len() {
-            self.selected += 1;
+        let next = (self.selected + 1..self.entries.len()).find(|i| self.is_selectable(*i));
+        if let Some(next) = next {
+            self.selected = next;
         }
     }
 
     pub fn select_prev(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
+        let prev = (0..self.selected).rev().find(|i| self.is_selectable(*i));
+        if let Some(prev) = prev {
+            self.selected = prev;
+        }
     }
 
-    /// Select the entry with the given index, if there is one.
+    /// Select the entry with the given index, if it can be selected.
+    ///
+    /// The separators are skipped, so that the mouse never highlights one.
     pub fn select(&mut self, index: usize) {
-        if index < self.entries.len() {
+        if self.is_selectable(index) {
             self.selected = index;
         }
     }
 
     /// The index of the entry rendered at the given screen position of the last rendered frame.
+    ///
+    /// The separators are not entries for the mouse: no position of the menu is matched to one of
+    /// them, so hovering or clicking one does nothing.
     pub fn entry_at(&self, column: u16, row: u16) -> Option<usize> {
         let position = Position::new(column, row);
         self.entry_rects
             .iter()
-            .position(|rect| rect.contains(position))
+            .enumerate()
+            .find(|(i, rect)| rect.contains(position) && self.is_selectable(*i))
+            .map(|(i, _)| i)
     }
 
     /// Whether the given screen position of the last rendered frame is inside the popup.
@@ -165,14 +192,7 @@ impl StatefulWidget for ActionMenu {
             .iter()
             .skip(state.offset)
             .take(height)
-            .map(|entry| {
-                let label = if entry.has_submenu() {
-                    format!("{} {}", entry.label(), "▸")
-                } else {
-                    entry.label().to_string()
-                };
-                Line::raw(label)
-            })
+            .map(|entry| self.entry_line(entry, inner.width))
             .collect::<Vec<_>>();
         let paragraph = Paragraph::new(lines);
         Widget::render(paragraph, inner, buf);
@@ -194,6 +214,30 @@ impl StatefulWidget for ActionMenu {
     }
 }
 
+impl ActionMenu {
+    /// The line rendered for an entry of the menu.
+    fn entry_line(&self, entry: &ActionMenuEntry, width: u16) -> Line<'static> {
+        match entry {
+            ActionMenuEntry::Separator => Line::from(Span::styled(
+                SEPARATOR.repeat(width as usize),
+                self.ctx.color_theme.divider_fg,
+            )),
+            // The mark is read from the current settings, so that a toggled entry shows its new
+            // state as soon as the menu is rendered again
+            ActionMenuEntry::Toggle { label, column } => {
+                let mark = if self.ctx.commit_list_config.get().shows(*column) {
+                    CHECKED_MARK
+                } else {
+                    UNCHECKED_MARK
+                };
+                Line::raw(format!("{mark} {label}"))
+            }
+            ActionMenuEntry::SubMenu { label, .. } => Line::raw(format!("{label} ▸")),
+            ActionMenuEntry::Action { label, .. } => Line::raw(label.clone()),
+        }
+    }
+}
+
 fn popup_area(
     area: Rect,
     title: &str,
@@ -202,7 +246,11 @@ fn popup_area(
 ) -> Rect {
     let max_label_width = entries
         .iter()
-        .map(|e| console::measure_text_width(e.label()) + if e.has_submenu() { 2 } else { 0 })
+        .map(|e| {
+            console::measure_text_width(e.label())
+                + if e.has_submenu() { 2 } else { 0 }
+                + if e.column_toggle().is_some() { 2 } else { 0 }
+        })
         .max()
         .unwrap_or_default();
     let width = (max_label_width + 2 /* padding */ + 2/* borders */)
@@ -262,23 +310,32 @@ fn anchored_popup_area(area: Rect, width: u16, height: u16, anchor: Position) ->
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
 
     use crate::{
         color::ColorTheme,
-        config::{ActionsConfig, CoreConfig, UiConfig},
+        config::{ActionsConfig, CommitListColumn, CoreConfig, UiCommitListConfig, UiConfig},
         keybind::KeyBind,
         protocol::ImageProtocol,
     };
 
     fn test_app_context() -> Rc<AppContext> {
+        test_app_context_with(UiCommitListConfig::default())
+    }
+
+    /// The context of a commit list whose optional columns are set as given.
+    fn test_app_context_with(commit_list_config: UiCommitListConfig) -> Rc<AppContext> {
+        let ui_config = UiConfig::default();
         Rc::new(AppContext {
             keybind: KeyBind::default(),
             core_config: CoreConfig::default(),
-            ui_config: UiConfig::default(),
+            ui_config,
             actions_config: ActionsConfig::default(),
             color_theme: ColorTheme::default(),
             image_protocol: ImageProtocol::Iterm2,
+            commit_list_config: Cell::new(commit_list_config),
         })
     }
 
@@ -294,6 +351,66 @@ mod tests {
                 })
                 .collect(),
         )
+    }
+
+    /// An entry that shows or hides a column of the commit list.
+    fn column_toggle(column: CommitListColumn) -> ActionMenuEntry {
+        ActionMenuEntry::Toggle {
+            label: column.label().into(),
+            column,
+        }
+    }
+
+    /// The entries of a menu that ends with a separator and the column toggles.
+    fn menu_with_column_toggles() -> Vec<ActionMenuEntry> {
+        let mut entries = vec![
+            ActionMenuEntry::SubMenu {
+                label: "first".into(),
+                entries: Vec::new(),
+            },
+            ActionMenuEntry::SubMenu {
+                label: "second".into(),
+                entries: Vec::new(),
+            },
+            ActionMenuEntry::Separator,
+        ];
+        entries.extend(
+            [
+                CommitListColumn::Date,
+                CommitListColumn::Hash,
+                CommitListColumn::Author,
+            ]
+            .map(column_toggle),
+        );
+        entries
+    }
+
+    /// The rows of the popup of the last rendered frame, as strings.
+    fn rendered_rows(state: &ActionMenuState, buf: &Buffer) -> Vec<String> {
+        let popup = state.rendered_area;
+        (popup.y..popup.bottom())
+            .map(|y| {
+                (popup.x..popup.right())
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Renders the given entries on a test buffer, and gives the state and the buffer to the
+    /// closure.
+    fn with_rendered_menu<R>(
+        ctx: &Rc<AppContext>,
+        entries: Vec<ActionMenuEntry>,
+        f: impl FnOnce(&ActionMenuState, &Buffer) -> R,
+    ) -> R {
+        let area = Rect::new(0, 0, 40, 24);
+        let mut state = ActionMenuState::new("Actions".into(), entries);
+        let mut buf = Buffer::empty(area);
+        ActionMenu::new(ctx.clone())
+            .placement(ActionMenuPlacement::Center)
+            .render(area, &mut buf, &mut state);
+        f(&state, &buf)
     }
 
     fn popup_of(area: Rect, state: &ActionMenuState, placement: ActionMenuPlacement) -> Rect {
@@ -452,5 +569,109 @@ mod tests {
         assert!(!state.contains(popup.right(), popup.y), "the border ends");
         assert!(!state.contains(popup.x, popup.bottom()));
         assert!(!state.contains(0, 0), "a click on the list is outside");
+    }
+
+    #[test]
+    fn test_the_column_toggles_show_whether_the_column_is_shown() {
+        let ctx = test_app_context();
+        with_rendered_menu(&ctx, menu_with_column_toggles(), |state, buf| {
+            let rows = rendered_rows(state, buf);
+            for label in ["Date", "Hash", "Author"] {
+                assert!(
+                    rows.iter().any(|row| row.contains(&format!("✓ {label}"))),
+                    "the entry of {label} is checked while the column is shown: {rows:?}"
+                );
+            }
+        });
+
+        // The date column is hidden, so its entry is not checked anymore
+        ctx.commit_list_config.set(UiCommitListConfig {
+            show_date: false,
+            ..Default::default()
+        });
+        with_rendered_menu(&ctx, menu_with_column_toggles(), |state, buf| {
+            let rows = rendered_rows(state, buf);
+            assert!(
+                rows.iter().any(|row| row.contains("  Date")),
+                "the entry of a hidden column is not checked: {rows:?}"
+            );
+            assert!(
+                rows.iter().any(|row| row.contains("✓ Hash")),
+                "the other entries keep their state: {rows:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn test_the_separator_is_a_line_across_the_menu_that_is_never_selected() {
+        let ctx = test_app_context();
+        with_rendered_menu(&ctx, menu_with_column_toggles(), |state, buf| {
+            let separator = state.entry_rects[2];
+            assert!(
+                !separator.is_empty(),
+                "the separator is rendered like the other entries"
+            );
+            for x in separator.x..separator.right() {
+                assert_eq!(
+                    buf[(x, separator.y)].symbol(),
+                    SEPARATOR,
+                    "the separator fills its row"
+                );
+            }
+            assert_eq!(
+                state.entry_at(separator.x, separator.y),
+                None,
+                "the mouse cannot select the separator"
+            );
+            assert!(
+                state.contains(separator.x, separator.y),
+                "a click on the separator is inside the popup, so it does not close the menu"
+            );
+            assert_eq!(
+                state.entry_at(state.entry_rects[3].x, state.entry_rects[3].y),
+                Some(3),
+                "the toggle below the separator is selectable"
+            );
+        });
+    }
+
+    #[test]
+    fn test_the_selection_skips_the_separator() {
+        let mut state = ActionMenuState::new("Actions".into(), menu_with_column_toggles());
+        assert_eq!(state.selected_entry().unwrap().label(), "first");
+
+        state.select_prev();
+        assert_eq!(
+            state.selected_entry().unwrap().label(),
+            "first",
+            "the selection stays on the first entry"
+        );
+        state.select_next();
+        assert_eq!(state.selected_entry().unwrap().label(), "second");
+        state.select_next();
+        assert_eq!(
+            state.selected_entry().unwrap().label(),
+            "Date",
+            "the separator is skipped"
+        );
+        state.select_next();
+        assert_eq!(state.selected_entry().unwrap().label(), "Hash");
+        state.select_next();
+        assert_eq!(state.selected_entry().unwrap().label(), "Author");
+        state.select_next();
+        assert_eq!(
+            state.selected_entry().unwrap().label(),
+            "Author",
+            "the selection does not move past the last entry"
+        );
+        state.select_prev();
+        assert_eq!(state.selected_entry().unwrap().label(), "Hash");
+
+        state.select(2);
+        assert_eq!(
+            state.selected_entry().unwrap().label(),
+            "Hash",
+            "the separator is not selectable, so its index is ignored"
+        );
     }
 }

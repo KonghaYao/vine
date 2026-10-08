@@ -6,7 +6,7 @@ use std::{
 use rustc_hash::FxHashMap;
 
 use crate::{
-    config::UserCommand,
+    config::{CommitListColumn, UserCommand},
     git::{CommitHash, Ref},
 };
 
@@ -374,21 +374,50 @@ pub enum ActionMenuEntry {
         label: String,
         action: MenuAction,
     },
+    /// A switch that shows or hides a column of the commit list.
+    Toggle {
+        label: String,
+        column: CommitListColumn,
+    },
     SubMenu {
         label: String,
         entries: Vec<ActionMenuEntry>,
     },
+    /// A horizontal line that separates the entries around it.
+    ///
+    /// A separator is not an action: it is never selected and it does not run anything.
+    Separator,
 }
 
 impl ActionMenuEntry {
     pub fn label(&self) -> &str {
         match self {
-            ActionMenuEntry::Action { label, .. } | ActionMenuEntry::SubMenu { label, .. } => label,
+            ActionMenuEntry::Action { label, .. }
+            | ActionMenuEntry::Toggle { label, .. }
+            | ActionMenuEntry::SubMenu { label, .. } => label,
+            ActionMenuEntry::Separator => "",
         }
     }
 
     pub fn has_submenu(&self) -> bool {
         matches!(self, ActionMenuEntry::SubMenu { .. })
+    }
+
+    /// The column that the entry shows or hides, or `None` when the entry is not a toggle.
+    pub fn column_toggle(&self) -> Option<CommitListColumn> {
+        match self {
+            ActionMenuEntry::Toggle { column, .. } => Some(*column),
+            ActionMenuEntry::Action { .. }
+            | ActionMenuEntry::SubMenu { .. }
+            | ActionMenuEntry::Separator => None,
+        }
+    }
+
+    /// Whether the entry can be selected and run by the user.
+    ///
+    /// The separators are the only entries that cannot.
+    pub fn is_selectable(&self) -> bool {
+        !matches!(self, ActionMenuEntry::Separator)
     }
 }
 
@@ -397,6 +426,23 @@ fn action_entry(label: impl Into<String>, action: MenuAction) -> ActionMenuEntry
         label: label.into(),
         action,
     }
+}
+
+/// The entries that show or hide the optional columns of the commit list.
+///
+/// They are not git actions, so they are listed whatever the state of the repository is.
+fn column_toggle_entries() -> Vec<ActionMenuEntry> {
+    [
+        CommitListColumn::Date,
+        CommitListColumn::Hash,
+        CommitListColumn::Author,
+    ]
+    .into_iter()
+    .map(|column| ActionMenuEntry::Toggle {
+        label: column.label().into(),
+        column,
+    })
+    .collect()
 }
 
 /// Builds the action menu for the given commit.
@@ -603,6 +649,10 @@ pub fn commit_menu_entries(
             });
         }
     }
+
+    // The column toggles are not git actions, so they are not gated by `ctx.writable`
+    entries.push(ActionMenuEntry::Separator);
+    entries.extend(column_toggle_entries());
 
     entries
 }
@@ -1475,7 +1525,39 @@ mod tests {
                 // the refs attached to the commit
                 "main",
                 "v1.0",
+                // the separator and the column toggles, which are not git actions
+                "",
+                "Date",
+                "Hash",
+                "Author",
             ]
+        );
+        assert_eq!(
+            &entries[entries.len() - 4..],
+            &[
+                ActionMenuEntry::Separator,
+                ActionMenuEntry::Toggle {
+                    label: "Date".into(),
+                    column: CommitListColumn::Date,
+                },
+                ActionMenuEntry::Toggle {
+                    label: "Hash".into(),
+                    column: CommitListColumn::Hash,
+                },
+                ActionMenuEntry::Toggle {
+                    label: "Author".into(),
+                    column: CommitListColumn::Author,
+                },
+            ],
+            "the menu ends with a separator and the three column toggles"
+        );
+        assert!(
+            entries.last().unwrap().is_selectable(),
+            "the column toggles are selectable"
+        );
+        assert!(
+            !entries[entries.len() - 4].is_selectable(),
+            "the separator before the toggles cannot be selected"
         );
 
         let ActionMenuEntry::SubMenu {
@@ -1592,6 +1674,22 @@ mod tests {
                 "Copy commit hash",
                 "Show commit details",
                 "Run user command 1: git diff",
+                // the column toggles are not git actions, so they are not gated by `writable`
+                "",
+                "Date",
+                "Hash",
+                "Author",
+            ]
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter_map(|entry| entry.column_toggle())
+                .collect::<Vec<_>>(),
+            vec![
+                CommitListColumn::Date,
+                CommitListColumn::Hash,
+                CommitListColumn::Author
             ]
         );
     }
@@ -1621,6 +1719,11 @@ mod tests {
                 "Run user command 1: one",
                 "Run user command 2: two",
                 "Run user command 10: ten",
+                // the separator and the column toggles
+                "",
+                "Date",
+                "Hash",
+                "Author",
             ]
         );
     }
@@ -1633,7 +1736,11 @@ mod tests {
             &user_commands(&[(1, "one")]),
             &menu_context(true, &[]),
         );
-        assert_eq!(labels(&entries).len(), 11);
+        assert_eq!(
+            labels(&entries).len(),
+            11 + 4,
+            "the separator and the three column toggles are added to the actions"
+        );
     }
 
     #[test]
@@ -1754,6 +1861,12 @@ mod tests {
                 "Delete",
                 "Delete (force)",
             ]
+        );
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.column_toggle().is_none() && entry.is_selectable()),
+            "the column toggles are only in the menu of a commit"
         );
     }
 

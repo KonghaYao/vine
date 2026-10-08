@@ -261,6 +261,12 @@ impl ActionMenuView<'_> {
                 self.menus.push(ActionMenuState::new(label, entries));
             }
             ActionMenuEntry::Action { action, .. } => self.start_action(action),
+            // The menu is kept open, so that several columns can be toggled in a row
+            ActionMenuEntry::Toggle { column, .. } => {
+                self.tx.send(AppEvent::ToggleCommitListColumn(column));
+            }
+            // A separator is not selectable, so it is never reached; nothing is run just in case
+            ActionMenuEntry::Separator => {}
         }
     }
 
@@ -439,6 +445,8 @@ impl ActionMenuView<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
 
     fn press(c: char) -> KeyEvent {
@@ -498,7 +506,7 @@ mod tests {
 
     use crate::{
         color::ColorTheme,
-        config::{ActionsConfig, CoreConfig, UiConfig},
+        config::{ActionsConfig, CommitListColumn, CoreConfig, UiCommitListConfig, UiConfig},
         event::{Receiver, Sender},
         git::CommitHash,
         keybind::KeyBind,
@@ -507,13 +515,20 @@ mod tests {
     use ratatui::{buffer::Buffer, layout::Position, widgets::StatefulWidget};
 
     fn test_app_context() -> Rc<AppContext> {
+        test_app_context_with(UiCommitListConfig::default())
+    }
+
+    /// The context of a commit list whose optional columns are set as given.
+    fn test_app_context_with(commit_list_config: UiCommitListConfig) -> Rc<AppContext> {
+        let ui_config = UiConfig::default();
         Rc::new(AppContext {
             keybind: KeyBind::default(),
             core_config: CoreConfig::default(),
-            ui_config: UiConfig::default(),
+            ui_config,
             actions_config: ActionsConfig::default(),
             color_theme: ColorTheme::default(),
             image_protocol: ImageProtocol::Iterm2,
+            commit_list_config: Cell::new(commit_list_config),
         })
     }
 
@@ -536,6 +551,24 @@ mod tests {
 
     fn detail_entry() -> ActionMenuEntry {
         entry("Show commit details", GitAction::ShowCommitDetail)
+    }
+
+    /// An entry that shows or hides a column of the commit list.
+    fn column_toggle(column: CommitListColumn) -> ActionMenuEntry {
+        ActionMenuEntry::Toggle {
+            label: column.label().into(),
+            column,
+        }
+    }
+
+    /// The entries of a menu that ends with a separator and the column toggles.
+    fn entries_with_column_toggles() -> Vec<ActionMenuEntry> {
+        vec![
+            copy_hash_entry(),
+            ActionMenuEntry::Separator,
+            column_toggle(CommitListColumn::Date),
+            column_toggle(CommitListColumn::Author),
+        ]
     }
 
     /// The view of a menu floating next to the more button of a row near the right edge.
@@ -813,5 +846,101 @@ mod tests {
             "the dialog is keyboard only, and a click does not run the action"
         );
         assert!(matches!(view.popup, ActionPopup::Confirm { .. }));
+    }
+
+    #[test]
+    fn test_the_click_on_a_column_toggle_sends_it_and_keeps_the_menu_open() {
+        let (mut view, rx) = floating_view(entries_with_column_toggles());
+        render(&mut view, area());
+        // The toggle of the date is the third entry; the separator before it is not an entry for
+        // the mouse, so its index is never returned by the hit test
+        let date = entry_position(&view, area(), 2);
+        assert_eq!(
+            view.menus[0].selected_entry().unwrap().label(),
+            "Copy commit hash"
+        );
+        view.handle_mouse_event(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            date.x,
+            date.y,
+        ));
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Some(AppEvent::ToggleCommitListColumn(CommitListColumn::Date))
+            ),
+            "the clicked toggle is the one that is sent"
+        );
+        assert!(
+            rx.try_recv().is_none(),
+            "the menu is not closed, so several columns can be toggled in a row"
+        );
+        assert_eq!(
+            view.menus[0].selected_entry().unwrap().label(),
+            "Date",
+            "the toggle that is clicked is selected"
+        );
+    }
+
+    #[test]
+    fn test_the_keyboard_toggles_the_column_below_the_separator() {
+        let (mut view, rx) = floating_view(entries_with_column_toggles());
+        let down = UserEventWithCount::from_event(UserEvent::NavigateDown);
+        let enter = UserEventWithCount::from_event(UserEvent::Confirm);
+        // The separator is skipped, so the first step down is the date toggle
+        view.handle_event(down, KeyEvent::from(KeyCode::Down));
+        assert_eq!(view.menus[0].selected_entry().unwrap().label(), "Date");
+        view.handle_event(enter, KeyEvent::from(KeyCode::Enter));
+        assert!(matches!(
+            rx.try_recv(),
+            Some(AppEvent::ToggleCommitListColumn(CommitListColumn::Date))
+        ));
+        assert!(rx.try_recv().is_none());
+
+        let up = UserEventWithCount::from_event(UserEvent::NavigateUp);
+        view.handle_event(up, KeyEvent::from(KeyCode::Up));
+        assert_eq!(
+            view.menus[0].selected_entry().unwrap().label(),
+            "Copy commit hash",
+            "the separator is skipped upwards too"
+        );
+    }
+
+    #[test]
+    fn test_the_click_on_the_separator_does_nothing() {
+        let (mut view, rx) = floating_view(entries_with_column_toggles());
+        render(&mut view, area());
+        // The row of the separator is inside the popup, so it is not one of its entries
+        let separator = separator_position(&view, area());
+        view.handle_mouse_event(mouse(MouseEventKind::Moved, separator.x, separator.y));
+        assert_eq!(
+            view.menus[0].selected_entry().unwrap().label(),
+            "Copy commit hash",
+            "hovering the separator does not change the selection"
+        );
+        view.handle_mouse_event(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            separator.x,
+            separator.y,
+        ));
+        assert!(
+            rx.try_recv().is_none(),
+            "a click on the separator is neither an action nor a click outside the popup"
+        );
+    }
+
+    /// A position of the row of the separator, which is the row above the date toggle.
+    fn separator_position(view: &ActionMenuView<'static>, area: Rect) -> Position {
+        let date = entry_position(view, area, 2);
+        let position = Position::new(date.x, date.y - 1);
+        assert!(
+            view.menus
+                .last()
+                .unwrap()
+                .entry_at(position.x, position.y)
+                .is_none(),
+            "the separator is not one of the entries of the menu"
+        );
+        position
     }
 }

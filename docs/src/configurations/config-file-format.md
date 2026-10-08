@@ -39,6 +39,11 @@ date_width = 10
 date_local = true
 name_width = 12
 
+[ui.commit_list]
+show_date = true
+show_hash = true
+show_author = true
+
 [ui.detail]
 height = 20
 date_format = "%Y-%m-%d %H:%M:%S %z"
@@ -373,6 +378,38 @@ The author name is right-aligned in this width, and truncated when it is longer.
 
 - type: `u16`
 - default: `12`
+
+### `ui.commit_list.show_date`
+
+Whether to show the author date of a commit in the commit list.
+
+- type: `boolean`
+- default: `true`
+
+The column is also hidden when `date` is not listed in `ui.list.columns`.
+
+The value can be changed while the application is running: the action menu of a commit ends with a
+separator followed by the `Date`, `Hash` and `Author` switches, which show or hide the three
+optional columns. Selecting a switch updates the commit list immediately and writes the three
+`ui.commit_list` values to the config file, so the choice is kept for the next session.
+
+### `ui.commit_list.show_hash`
+
+Whether to show the short commit hash in the commit list.
+
+- type: `boolean`
+- default: `true`
+
+The column is also hidden when `hash` is not listed in `ui.list.columns`.
+
+### `ui.commit_list.show_author`
+
+Whether to show the name of the author of a commit in the commit list.
+
+- type: `boolean`
+- default: `true`
+
+The column is also hidden when `name` is not listed in `ui.list.columns`.
 
 ### `ui.detail.height`
 

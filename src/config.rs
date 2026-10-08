@@ -85,6 +85,62 @@ fn read_config_from_path(path: &Path) -> Result<Config> {
     Ok(config.into())
 }
 
+/// Writes the visibility of the optional columns of the commit list to the config file.
+///
+/// The file is the one that is read at startup (see [`load`]), including the one that is specified
+/// by the `$VINE_CONFIG_FILE` environment variable, and it is created when it does not exist yet.
+/// Only the keys of the commit list are changed: every other value of the file is kept as it is,
+/// including the sections and the keys that the application does not know about. The file is
+/// rewritten as a whole, so the comments and the layout of the original file are not kept.
+pub fn save_commit_list_config(commit_list: UiCommitListConfig) -> Result<()> {
+    match config_file_path_from_env().or_else(config_file_path) {
+        Some(path) => write_commit_list_config(&path, commit_list),
+        None => Err("The config file is not found, so the setting is not saved".into()),
+    }
+}
+
+fn write_commit_list_config(path: &Path, commit_list: UiCommitListConfig) -> Result<()> {
+    let mut config = if path.exists() {
+        let content = std::fs::read_to_string(path)?;
+        toml::from_str::<toml::Table>(&content)?
+    } else {
+        toml::Table::new()
+    };
+    let table = section(&mut config, "ui", path)?;
+    let table = section(table, "commit_list", path)?;
+    table.insert("show_date".into(), commit_list.show_date.into());
+    table.insert("show_hash".into(), commit_list.show_hash.into());
+    table.insert("show_author".into(), commit_list.show_author.into());
+
+    let content = toml::to_string_pretty(&config)?;
+    write_atomically(path, &content)
+}
+
+/// The table of the given key of the config, created when it does not exist yet.
+fn section<'a>(table: &'a mut toml::Table, key: &str, path: &Path) -> Result<&'a mut toml::Table> {
+    table
+        .entry(key)
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+        .as_table_mut()
+        .ok_or_else(|| format!("The `{key}` section of {} is not a table", path.display()).into())
+}
+
+/// Writes the content to the path through a temporary file next to it, so that an interrupted
+/// write never leaves a truncated config file behind.
+fn write_atomically(path: &Path, content: &str) -> Result<()> {
+    let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty());
+    if let Some(dir) = dir {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, content)?;
+    if let Err(err) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err.into());
+    }
+    Ok(())
+}
+
 #[optional(derives = [Deserialize])]
 #[derive(Debug, Default, Clone, PartialEq, Eq, Validate)]
 struct Config {
@@ -286,6 +342,9 @@ pub struct UiConfig {
     #[garde(dive)]
     #[nested]
     pub list: UiListConfig,
+    #[garde(skip)]
+    #[nested]
+    pub commit_list: UiCommitListConfig,
     #[garde(dive)]
     #[nested]
     pub detail: UiDetailConfig,
@@ -384,6 +443,92 @@ pub enum UserListColumnType {
     Name,
     Hash,
     Date,
+}
+
+/// The visibility of the optional columns of the commit list.
+///
+/// The three columns are toggled from the action menu of a commit, and the values are written back
+/// to the config file, so that the choice is kept for the next session.
+#[optional(derives = [Deserialize])]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UiCommitListConfig {
+    /// Whether the author date of a commit is shown in the commit list.
+    pub show_date: bool,
+    /// Whether the short hash of a commit is shown in the commit list.
+    pub show_hash: bool,
+    /// Whether the name of the author of a commit is shown in the commit list.
+    pub show_author: bool,
+}
+
+impl Default for UiCommitListConfig {
+    fn default() -> Self {
+        // The three optional columns are shown by default. These are the values to change to flip
+        // the default of all of them at once.
+        Self {
+            show_date: true,
+            show_hash: true,
+            show_author: true,
+        }
+    }
+}
+
+impl UiCommitListConfig {
+    /// Whether the given column is shown.
+    pub fn shows(self, column: CommitListColumn) -> bool {
+        match column {
+            CommitListColumn::Date => self.show_date,
+            CommitListColumn::Hash => self.show_hash,
+            CommitListColumn::Author => self.show_author,
+        }
+    }
+
+    /// Shows or hides the given column.
+    pub fn set(&mut self, column: CommitListColumn, show: bool) {
+        match column {
+            CommitListColumn::Date => self.show_date = show,
+            CommitListColumn::Hash => self.show_hash = show,
+            CommitListColumn::Author => self.show_author = show,
+        }
+    }
+
+    /// Hides the given column when it is shown, and shows it when it is hidden.
+    pub fn toggle(&mut self, column: CommitListColumn) {
+        self.set(column, !self.shows(column));
+    }
+
+    /// Whether the given column of the commit list is hidden by these settings.
+    pub fn hides(self, column: &UserListColumnType) -> bool {
+        match column {
+            UserListColumnType::Date => !self.show_date,
+            UserListColumnType::Hash => !self.show_hash,
+            UserListColumnType::Name => !self.show_author,
+            UserListColumnType::Graph
+            | UserListColumnType::Marker
+            | UserListColumnType::Subject => false,
+        }
+    }
+}
+
+/// A column of the commit list that can be shown or hidden from the action menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitListColumn {
+    /// The author date of a commit.
+    Date,
+    /// The short hash of a commit.
+    Hash,
+    /// The name of the author of a commit.
+    Author,
+}
+
+impl CommitListColumn {
+    /// The label of the action menu entry that toggles the column.
+    pub fn label(self) -> &'static str {
+        match self {
+            CommitListColumn::Date => "Date",
+            CommitListColumn::Hash => "Hash",
+            CommitListColumn::Author => "Author",
+        }
+    }
 }
 
 #[optional(derives = [Deserialize])]
@@ -528,6 +673,11 @@ mod tests {
                     date_width: 10,
                     date_local: true,
                     name_width: 12,
+                },
+                commit_list: UiCommitListConfig {
+                    show_date: true,
+                    show_hash: true,
+                    show_author: true,
                 },
                 detail: UiDetailConfig {
                     height: 20,
@@ -702,6 +852,11 @@ mod tests {
                     date_local: false,
                     name_width: 30,
                 },
+                commit_list: UiCommitListConfig {
+                    show_date: true,
+                    show_hash: true,
+                    show_author: true,
+                },
                 detail: UiDetailConfig {
                     height: 30,
                     date_format: "%Y/%m/%d %H:%M:%S".into(),
@@ -823,6 +978,11 @@ mod tests {
                     date_width: 10,
                     date_local: true,
                     name_width: 12,
+                },
+                commit_list: UiCommitListConfig {
+                    show_date: true,
+                    show_hash: true,
+                    show_author: true,
                 },
                 detail: UiDetailConfig {
                     height: 20,
@@ -948,6 +1108,215 @@ mod tests {
             ClipboardConfig::Custom {
                 commands: vec!["xclip".into(), "-selection".into(), "clipboard".into()]
             }
+        );
+    }
+
+    #[test]
+    fn test_config_commit_list_columns_are_shown_by_default() {
+        assert_eq!(
+            UiCommitListConfig::default(),
+            UiCommitListConfig {
+                show_date: true,
+                show_hash: true,
+                show_author: true,
+            }
+        );
+        let config: Config = toml::from_str::<OptionalConfig>("").unwrap().into();
+        assert_eq!(config.ui.commit_list, UiCommitListConfig::default());
+    }
+
+    #[test]
+    fn test_config_commit_list_columns_can_be_hidden() {
+        let toml = r#"
+            [ui.commit_list]
+            show_date = false
+            show_hash = true
+            show_author = false
+        "#;
+        let config: Config = toml::from_str::<OptionalConfig>(toml).unwrap().into();
+        assert_eq!(
+            config.ui.commit_list,
+            UiCommitListConfig {
+                show_date: false,
+                show_hash: true,
+                show_author: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_config_commit_list_columns_default_one_by_one() {
+        let toml = r#"
+            [ui.commit_list]
+            show_date = false
+        "#;
+        let config: Config = toml::from_str::<OptionalConfig>(toml).unwrap().into();
+        assert!(!config.ui.commit_list.show_date);
+        assert!(
+            config.ui.commit_list.show_hash && config.ui.commit_list.show_author,
+            "the keys that are not in the config file keep their default"
+        );
+    }
+
+    #[test]
+    fn test_commit_list_columns_toggle_and_hide_the_columns_of_the_list() {
+        let mut commit_list = UiCommitListConfig::default();
+        for column in [
+            CommitListColumn::Date,
+            CommitListColumn::Hash,
+            CommitListColumn::Author,
+        ] {
+            assert!(commit_list.shows(column));
+        }
+
+        commit_list.toggle(CommitListColumn::Hash);
+        assert!(!commit_list.shows(CommitListColumn::Hash));
+        assert!(
+            commit_list.shows(CommitListColumn::Date)
+                && commit_list.shows(CommitListColumn::Author),
+            "only the toggled column is changed"
+        );
+        commit_list.toggle(CommitListColumn::Hash);
+        assert!(commit_list.shows(CommitListColumn::Hash));
+
+        let all_columns = [
+            UserListColumnType::Graph,
+            UserListColumnType::Marker,
+            UserListColumnType::Subject,
+            UserListColumnType::Name,
+            UserListColumnType::Hash,
+            UserListColumnType::Date,
+        ];
+        assert_eq!(
+            all_columns
+                .iter()
+                .filter(|column| commit_list.hides(column))
+                .count(),
+            0
+        );
+
+        let mut commit_list = UiCommitListConfig::default();
+        for column in [
+            CommitListColumn::Date,
+            CommitListColumn::Hash,
+            CommitListColumn::Author,
+        ] {
+            commit_list.toggle(column);
+        }
+        assert_eq!(
+            &all_columns
+                .iter()
+                .filter(|column| commit_list.hides(column))
+                .collect::<Vec<_>>(),
+            &[
+                &UserListColumnType::Name,
+                &UserListColumnType::Hash,
+                &UserListColumnType::Date
+            ],
+            "the graph, the marker and the subject are never hidden"
+        );
+    }
+
+    #[test]
+    fn test_saving_the_commit_list_columns_keeps_the_other_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+            [core.git]
+            mailmap = true
+            untouched = "kept"
+
+            [core.user_command]
+            commands_1 = { name = "git diff", commands = ["git", "diff"] }
+
+            [ui.list]
+            date_format = "%Y/%m/%d"
+            columns = ["graph", "subject", "date"]
+
+            [ui.commit_list]
+            show_date = true
+            show_hash = true
+            show_author = true
+        "#,
+        )
+        .unwrap();
+
+        let saved = UiCommitListConfig {
+            show_date: false,
+            show_hash: true,
+            show_author: false,
+        };
+        write_commit_list_config(&path, saved).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .parse::<toml::Table>()
+                .unwrap(),
+            toml::from_str::<toml::Table>(
+                r#"
+                [core.git]
+                mailmap = true
+                untouched = "kept"
+
+                [core.user_command]
+                commands_1 = { name = "git diff", commands = ["git", "diff"] }
+
+                [ui.list]
+                date_format = "%Y/%m/%d"
+                columns = ["graph", "subject", "date"]
+
+                [ui.commit_list]
+                show_date = false
+                show_hash = true
+                show_author = false
+            "#
+            )
+            .unwrap(),
+        );
+
+        // The whole config is still read back, with the saved columns and the other values
+        let config = read_config_from_path(&path).unwrap();
+        assert_eq!(config.ui.commit_list, saved);
+        assert!(config.core.git.mailmap);
+        assert_eq!(config.ui.list.date_format, "%Y/%m/%d");
+        assert_eq!(
+            config.ui.list.columns,
+            vec![
+                UserListColumnType::Graph,
+                UserListColumnType::Subject,
+                UserListColumnType::Date
+            ]
+        );
+        assert_eq!(
+            config.core.user_command.commands["1"].name, "git diff",
+            "the inline user command is still read back"
+        );
+    }
+
+    #[test]
+    fn test_saving_the_commit_list_columns_creates_the_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vine").join("config.toml");
+        let saved = UiCommitListConfig {
+            show_date: true,
+            show_hash: false,
+            show_author: true,
+        };
+
+        write_commit_list_config(&path, saved).unwrap();
+        assert!(path.exists());
+        let config = read_config_from_path(&path).unwrap();
+        assert_eq!(config.ui.commit_list, saved);
+        assert_eq!(
+            config.ui.list,
+            UiListConfig::default(),
+            "the keys that are not saved keep their default"
+        );
+        assert!(
+            !path.with_extension("toml.tmp").exists(),
+            "the temporary file used by the atomic write is removed"
         );
     }
 }

@@ -312,6 +312,28 @@
           },
           "additionalProperties": false
         },
+        "commit_list": {
+          "type": "object",
+          "description": "The visibility of the optional columns of the commit list. The columns are toggled from the action menu of a commit, which saves the new value here.",
+          "properties": {
+            "show_date": {
+              "type": "boolean",
+              "description": "Whether to show the author date column of the commit list. The column is hidden when the value is false, and it is also removed from ui.list.columns if it is listed there.",
+              "default": true
+            },
+            "show_hash": {
+              "type": "boolean",
+              "description": "Whether to show the commit hash column of the commit list. The column is hidden when the value is false, and it is also removed from ui.list.columns if it is listed there.",
+              "default": true
+            },
+            "show_author": {
+              "type": "boolean",
+              "description": "Whether to show the author name column of the commit list. The column is hidden when the value is false, and it is also removed from ui.list.columns if it is listed there.",
+              "default": true
+            }
+          },
+          "additionalProperties": false
+        },
         "detail": {
           "type": "object",
           "description": "Settings for the commit detail view.",

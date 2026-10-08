@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     collections::VecDeque,
     io::{self, Write},
     rc::Rc,
@@ -17,7 +18,10 @@ use rustc_hash::FxHashMap;
 
 use crate::{
     color::{ColorTheme, GraphColorSet},
-    config::{ActionsConfig, CoreConfig, CursorType, UiConfig, UserCommand, UserCommandType},
+    config::{
+        self, ActionsConfig, CommitListColumn, CoreConfig, CursorType, UiCommitListConfig,
+        UiConfig, UserCommand, UserCommandType,
+    },
     event::{AppEvent, EventController, UserEvent, UserEventWithCount},
     external::{
         copy_to_clipboard, exec_user_command, exec_user_command_suspend, ExternalCommandParameters,
@@ -284,6 +288,13 @@ pub struct AppContext {
     pub actions_config: ActionsConfig,
     pub color_theme: ColorTheme,
     pub image_protocol: ImageProtocol,
+    /// The visibility of the optional columns of the commit list.
+    ///
+    /// The value is the one of `ui_config.commit_list` when the application starts, and it is
+    /// changed by the action menu while it runs, so that the commit list is rendered with the
+    /// choice of the user without restarting. The change is written to the config file by the
+    /// application, and the field is the value that is saved.
+    pub commit_list_config: Cell<UiCommitListConfig>,
 }
 
 #[derive(Debug, Default)]
@@ -554,6 +565,9 @@ impl App<'_> {
                 }
                 AppEvent::ExecuteGitAction(action) => {
                     self.execute_git_action(*action);
+                }
+                AppEvent::ToggleCommitListColumn(column) => {
+                    self.toggle_commit_list_column(column);
                 }
                 AppEvent::SwitchToRef(r) => {
                     self.switch_to_ref(*r);
@@ -1135,6 +1149,21 @@ impl App<'_> {
     fn close_actions(&mut self) {
         if let View::ActionMenu(ref mut view) = self.view {
             self.view = view.take_before_view();
+        }
+    }
+
+    /// Shows or hides a column of the commit list, and saves the choice to the config file.
+    ///
+    /// The commit list is rendered with the new value on the next frame, so that the change is
+    /// shown as soon as it is made.
+    fn toggle_commit_list_column(&mut self, column: CommitListColumn) {
+        let mut commit_list = self.ctx.commit_list_config.get();
+        commit_list.toggle(column);
+        self.ctx.commit_list_config.set(commit_list);
+        if let Err(err) = config::save_commit_list_config(commit_list) {
+            self.ec.send(AppEvent::NotifyError(format!(
+                "Cannot save the config: {err}"
+            )));
         }
     }
 
