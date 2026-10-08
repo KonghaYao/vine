@@ -22,7 +22,7 @@ Before reporting, please check if an issue with the same content already exists.
 
 ### Reporting Bugs
 
-Serie renders commit graphs using terminal image display protocols. Before reporting a graph rendering problem, make sure you understand which protocol Serie is using and confirm that every part of your terminal environment supports it. When using a terminal multiplexer, also confirm whether it supports or passes through the selected protocol. See [Compatibility](https://lusingander.github.io/serie/getting-started/compatibility.html) for the protocols and environments currently supported by Serie.
+Serie renders the commit graph with Unicode box-drawing characters by default, and can render it using a terminal image display protocol when one is selected explicitly with the `--protocol` option, the `$SERIE_PROTOCOL` environment variable, or the `protocol` config option. Before reporting a graph rendering problem, make sure you understand which protocol Serie is using and confirm that every part of your terminal environment supports it. When using a terminal multiplexer, also confirm whether it supports or passes through the selected protocol. See [Compatibility](https://lusingander.github.io/serie/getting-started/compatibility.html) for the protocols and environments currently supported by Serie.
 
 When reporting a bug, please include the following information:
 

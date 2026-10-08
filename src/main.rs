@@ -45,7 +45,7 @@ struct Args {
     #[arg(short = 'n', long, value_name = "NUMBER")]
     max_count: Option<usize>,
 
-    /// Image protocol to render graph [default: auto]
+    /// Image protocol to render graph [default: ascii]
     #[arg(short, long, value_name = "TYPE")]
     protocol: Option<ImageProtocolType>,
 
@@ -117,6 +117,20 @@ fn protocol_type_from_value(value: Option<String>) -> Result<Option<ImageProtoco
     })
 }
 
+/// Resolves the protocol type to use, in order of precedence: the `--protocol` option, the
+/// `$SERIE_PROTOCOL` environment variable, and the `protocol` config option.
+///
+/// `None` means that none of them is specified, and the default is used.
+fn resolve_protocol_type(
+    protocol: Option<ImageProtocolType>,
+    env_protocol: Result<Option<ImageProtocolType>>,
+    config_protocol: Option<ImageProtocolType>,
+) -> Result<Option<ImageProtocolType>> {
+    // The environment variable is parsed even when the option takes precedence over it, so that a
+    // typo in the environment is reported instead of being silently ignored.
+    Ok(protocol.or(env_protocol?).or(config_protocol))
+}
+
 impl From<Option<ImageProtocolType>> for protocol::ImageProtocol {
     fn from(protocol: Option<ImageProtocolType>) -> Self {
         match protocol {
@@ -126,8 +140,9 @@ impl From<Option<ImageProtocolType>> for protocol::ImageProtocol {
             Some(ImageProtocolType::KittyUnicode) => protocol::ImageProtocol::KittyUnicode {
                 tmux: protocol::detect_tmux(),
             },
-            Some(ImageProtocolType::Ascii) => protocol::ImageProtocol::Ascii,
-            None => protocol::auto_detect(),
+            // The ASCII graph is the default: the image protocols and the terminal detection have
+            // to be requested explicitly, so that the graph is always visible.
+            Some(ImageProtocolType::Ascii) | None => protocol::ImageProtocol::Ascii,
         }
     }
 }
@@ -200,11 +215,12 @@ fn main() -> Result<()> {
     let keybind = keybind::KeyBind::new(keybind_patch);
 
     let max_count = args.max_count;
-    let image_protocol = args
-        .protocol
-        .or(protocol_type_from_env()?)
-        .or(core_config.option.protocol)
-        .into();
+    let image_protocol = resolve_protocol_type(
+        args.protocol,
+        protocol_type_from_env(),
+        core_config.option.protocol,
+    )?
+    .into();
     let order = args.order.or(core_config.option.order).into();
     let graph_width = args.graph_width.or(core_config.option.graph_width);
     let graph_style = args.graph_style.or(core_config.option.graph_style).into();
@@ -328,5 +344,67 @@ mod protocol_env_tests {
         let msg = err.to_string();
         assert!(msg.contains("SERIE_PROTOCOL"), "{msg}");
         assert!(msg.contains("kitty-unicode"), "{msg}");
+    }
+
+    #[test]
+    fn test_resolve_protocol_type_prefers_the_option_then_the_env_then_the_config() {
+        let env = || Ok(Some(ImageProtocolType::KittyUnicode));
+        let config = Some(ImageProtocolType::Kitty);
+
+        // The option takes precedence over the environment variable and the config.
+        assert_eq!(
+            resolve_protocol_type(Some(ImageProtocolType::Iterm), env(), config).unwrap(),
+            Some(ImageProtocolType::Iterm)
+        );
+        // The environment variable takes precedence over the config.
+        assert_eq!(
+            resolve_protocol_type(None, env(), config).unwrap(),
+            Some(ImageProtocolType::KittyUnicode)
+        );
+        // Without the option and the environment variable, the config is used.
+        assert_eq!(
+            resolve_protocol_type(None, Ok(None), config).unwrap(),
+            Some(ImageProtocolType::Kitty)
+        );
+        // Without any of them, the default is used.
+        assert_eq!(resolve_protocol_type(None, Ok(None), None).unwrap(), None);
+    }
+
+    #[test]
+    fn test_resolve_protocol_type_reports_an_invalid_environment_variable() {
+        // A typo in the environment is reported even when the option takes precedence over it.
+        let err = resolve_protocol_type(
+            Some(ImageProtocolType::Ascii),
+            protocol_type_from_value(Some("invalid".into())),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("SERIE_PROTOCOL"), "{err}");
+
+        let err =
+            resolve_protocol_type(None, protocol_type_from_value(Some("invalid".into())), None)
+                .unwrap_err();
+        assert!(err.to_string().contains("SERIE_PROTOCOL"), "{err}");
+    }
+
+    #[test]
+    fn test_the_default_protocol_is_ascii() {
+        // Without the option, the environment variable, and the config, every terminal renders the
+        // ASCII graph: the image protocols have to be requested explicitly.
+        let default = resolve_protocol_type(None, Ok(None), None).unwrap();
+        assert_eq!(
+            protocol::ImageProtocol::from(default),
+            protocol::ImageProtocol::Ascii
+        );
+
+        // The explicit `auto` still detects the protocol of the current terminal.
+        assert_eq!(
+            protocol::ImageProtocol::from(Some(ImageProtocolType::Auto)),
+            protocol::auto_detect()
+        );
+        assert_eq!(
+            protocol::ImageProtocol::from(Some(ImageProtocolType::Ascii)),
+            protocol::ImageProtocol::Ascii
+        );
     }
 }

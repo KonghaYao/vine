@@ -11,7 +11,7 @@ A rich git commit graph in your terminal, like magic 📚
 
 ## About
 
-Serie ([`/zéːriə/`](https://lusingander.github.io/serie/faq/index.html#how-do-i-pronounce-serie)) is a TUI application that renders commit graphs like `git log --graph --all`, using the terminal emulators' image display protocol for high-quality output where it is available, and a Unicode box-drawing fallback in any other terminal.
+Serie ([`/zéːriə/`](https://lusingander.github.io/serie/faq/index.html#how-do-i-pronounce-serie)) is a TUI application that renders commit graphs like `git log --graph --all`, drawing the graph with Unicode box-drawing characters by default, and using the terminal emulators' image display protocol for high-quality output when it is selected explicitly.
 
 ### Why?
 
@@ -28,7 +28,7 @@ Personally, I found the output from `git log --graph` difficult to read, even wi
 
 - Implement a fully-featured Git client.
 - Create a TUI application with a complex UI.
-- Render the graph with the same quality everywhere: terminals without an image display protocol use the simpler Unicode fallback.
+- Render the graph with the same quality everywhere: the image graph is not used without being asked for, since the Unicode graph works in any terminal.
 
 ## Documentation
 
@@ -38,7 +38,7 @@ For detailed usage, configuration, and advanced features, see [the full document
 
 - Git
 - A terminal emulator
-  - Terminals with an image display protocol get the high-quality graph, and any other terminal gets the Unicode box-drawing fallback.
+  - The graph is drawn with Unicode box-drawing characters by default. In a terminal with an image display protocol, the high-quality image graph can be enabled explicitly with `--protocol`.
   - Refer to [Compatibility](https://lusingander.github.io/serie/getting-started/compatibility.html) for details.
 
 ## Installation
@@ -71,7 +71,7 @@ Usage: serie [OPTIONS]
 
 Options:
   -n, --max-count <NUMBER>        Maximum number of commits to render
-  -p, --protocol <TYPE>           Image protocol to render graph [default: auto] [possible values: auto, iterm, kitty, kitty-unicode, ascii]
+  -p, --protocol <TYPE>           Image protocol to render graph [default: ascii] [possible values: auto, iterm, kitty, kitty-unicode, ascii]
   -o, --order <TYPE>              Commit ordering algorithm [default: chrono] [possible values: chrono, topo]
   -g, --graph-width <TYPE>        Commit graph image cell width [default: auto] [possible values: auto, double, single]
   -s, --graph-style <TYPE>        Commit graph image edge style [default: rounded] [possible values: rounded, angular]
@@ -157,27 +157,28 @@ For details on how to set commands, see [User Command](https://lusingander.githu
 
 These rendering modes are supported:
 
+- ASCII graph (Unicode box-drawing characters, works in any terminal)
+  - This is the default: the graph is drawn with it unless an image protocol is selected explicitly.
 - [Inline Images Protocol (iTerm2)](https://iterm2.com/documentation-images.html)
 - [Terminal graphics protocol (kitty)](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
   - Supports both the existing graphics protocol mode and the [Unicode placeholder](https://sw.kovidgoyal.net/kitty/graphics-protocol/#unicode-placeholders) mode.
-- ASCII graph (Unicode box-drawing characters, works in any terminal)
-  - Used as the fallback when `auto` cannot identify a terminal that supports an image protocol, or selected explicitly with `--protocol ascii`.
 
-The mode can also be forced with the `$SERIE_PROTOCOL` environment variable (e.g. `SERIE_PROTOCOL=ascii`), which is useful when the automatic detection does not fit the environment (ssh sessions, unknown terminal emulators, ...).
-The `--protocol` option takes precedence over it, and it takes precedence over the `protocol` config option.
+An image protocol can be selected with the `--protocol` option, the `$SERIE_PROTOCOL` environment variable (e.g. `SERIE_PROTOCOL=kitty`), or the `protocol` config option.
+The `--protocol` option takes precedence over the environment variable, and the environment variable takes precedence over the `protocol` config option.
+`auto` is the value that lets Serie pick an image protocol from the terminal environment; specify it when you want the image graph to be enabled automatically in a terminal that supports it.
 
 For more information, see [Compatibility](https://lusingander.github.io/serie/getting-started/compatibility.html).
 
 ### Partially supported environments
 
-- tmux uses the ASCII graph by default, since whether tmux forwards the image escapes to the outer terminal cannot be detected.
+- Under tmux, `auto` selects the ASCII graph, since whether tmux forwards the image escapes to the outer terminal cannot be detected.
   - To use the high-quality image graph inside tmux, enable `set -g allow-passthrough on` in tmux.conf (version 3.2+) and specify `--protocol kitty-unicode` (or `protocol = "kitty-unicode"` in the config) with a terminal emulator that supports the kitty graphics protocol.
 - Only the kitty graphics protocol works under tmux; the iTerm2 inline images protocol does not.
 
 ### Unsupported environments
 
 - Sixel graphics is not supported.
-- Other terminal multiplexers (screen, Zellij, etc.) cannot display the image graph; they use the ASCII graph instead.
+- Other terminal multiplexers (screen, Zellij, etc.) cannot display the image graph; use the default ASCII graph there.
 - Windows is not officially supported. Please refer to [the related issue](https://github.com/lusingander/serie/issues/147#issuecomment-4192875627).
 
 ## Screenshots
