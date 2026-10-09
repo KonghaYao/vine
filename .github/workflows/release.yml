@@ -113,11 +113,11 @@ jobs:
           set -euo pipefail
           sha256sum -- *.tar.gz > SHA256SUMS
           cat SHA256SUMS
-      - name: Create Draft Release
+      - name: Create Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ needs.verify.outputs.tag }}
-          draft: true
+          draft: false
           generate_release_notes: true
           make_latest: true
           files: |
