@@ -14,7 +14,7 @@ The command records the tool in the global `mise.toml` and puts `vine` on your `
 $ mise upgrade vine
 ```
 
-and it can be pinned to a version with `mise use -g github:KonghaYao/vine@1.0.0`. mise picks the asset of the current platform (Linux x86_64/aarch64 with glibc or musl, and macOS Intel/Apple Silicon) by itself, so there is nothing else to configure.
+and it can be pinned to a version with `mise use -g github:KonghaYao/vine@1.1.0`. mise picks the asset of the current platform (Linux x86_64/aarch64 with glibc or musl, and macOS Intel/Apple Silicon) by itself, so there is nothing else to configure.
 
 ### Downloading the binary
 
